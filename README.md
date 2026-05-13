@@ -36,24 +36,41 @@ Full scope, acceptance criteria, and architecture for every phase live in [`docs
 
 Primary workflow: **VS Code + Jacques Lucke's "Blender Development" extension**, for hot-reload on save without restarting Blender.
 
+### First-time setup (per machine)
+
 ```bash
 # 1. Clone
 git clone git@github.pie.apple.com:oliver-shaw/depth-peel-xr.git
 cd depth-peel-xr
 
 # 2. Dev venv (for pytest + autocomplete; Blender uses its own bundled Python)
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt   # created in Phase 0
+pip install -r requirements-dev.txt
 
 # 3. Symlink the add-on into Blender's extensions dir
 ./tools/install_dev_symlink.sh        # created in Phase 0
 
-# 4. Install VS Code + the Blender Development extension, then:
-#    Cmd+Shift+P → "Blender: Start"
+# 4. Install the Blender Development VS Code extension
+code --install-extension jacqueslucke.blender-development
 ```
 
-See the **Development workflow** section of the implementation plan for the full setup, the manual `dev_reload.py` fallback, and the `core/` vs `operators/` package rules that keep hot-reload clean.
+### VS Code configuration (required for hot-reload)
+
+After opening the repo in VS Code, three one-off steps in the UI. The JSON settings live in `.vscode/settings.json` but some of them only take effect after being confirmed manually.
+
+1. **Trust the workspace.** If the bottom-left status bar says "Restricted Mode", workspace-contributed extension settings are partially ignored and hot-reload will not fire. `Cmd+Shift+P → Workspaces: Manage Workspace Trust → Trust`.
+2. **Confirm `reloadOnSave` is applied at workspace scope.** `Cmd+,` → search `blender.addon.reloadOnSave` → click the **Workspace** tab directly below the search bar → the checkbox must be ticked. If it's empty despite being `true` in `.vscode/settings.json`, tick it in the UI once — the first-time workspace load sometimes doesn't apply the JSON value until it's touched through the UI. Without this, `Blender: Reload Addons` still works manually but saves won't trigger reload.
+3. **Point the extension at the right Blender.** First time you run `Cmd+Shift+P → Blender: Start`, it prompts for a Blender binary. On the primary dev machine this lives at `/Applications/Blender_5.app/Contents/MacOS/Blender` (non-standard app name — Blender 4.4 coexists as `Blender_44.app`). If you later need to re-point it, edit `blender.executables` via `Cmd+Shift+P → Preferences: Open User Settings (JSON)`.
+
+### Daily loop
+
+- `Cmd+Shift+P → Blender: Start` — launches Blender with the add-on registered.
+- Save any file under `addon/` — triggers a live add-on reload in the running Blender (no restart).
+- `Cmd+Shift+P → Blender: Reload Addons` — manual reload fallback if auto-reload misfires.
+- `pytest addon/tests/` in the terminal — runs the `core/` unit tests without touching Blender.
+
+See the **Development workflow** section of the implementation plan for full detail, the manual `dev_reload.py` fallback, and the `core/` vs `operators/` package rules that keep hot-reload clean.
 
 ## Repository layout
 

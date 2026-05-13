@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "depth_peel_xr"
+version = "0.1.0"
+name = "Depth Peel XR"
+tagline = "Depth-peeled impostor layers for XR portal viewing"
+maintainer = "Ollie Shaw"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+tags = ["Pipeline", "Render"]
