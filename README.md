@@ -68,7 +68,7 @@ After opening the repo in VS Code, three one-off steps in the UI. The JSON setti
 - `Cmd+Shift+P → Blender: Start` — launches Blender with the add-on registered.
 - Save any file under `addon/` — triggers a live add-on reload in the running Blender (no restart).
 - `Cmd+Shift+P → Blender: Reload Addons` — manual reload fallback if auto-reload misfires.
-- `pytest addon/tests/` in the terminal — runs the `core/` unit tests without touching Blender.
+- `pytest tests/` in the terminal — runs the `core/` unit tests without touching Blender.
 
 See the **Development workflow** section of the implementation plan for full detail, the manual `dev_reload.py` fallback, and the `core/` vs `operators/` package rules that keep hot-reload clean.
 
@@ -77,11 +77,14 @@ See the **Development workflow** section of the implementation plan for full det
 ```
 depth-peel-xr/
 ├── addon/                            # the add-on package (symlinked into Blender's extensions dir)
+├── tests/                            # pytest suite for addon/core/ (outside addon/ so pytest
+│                                     # collection isn't blocked by addon/__init__.py's bpy import)
 ├── tools/                            # install_dev_symlink.sh, run_core_tests.sh
 ├── docs/
 │   ├── implementation_plan.md        # authoritative phase-by-phase plan
 │   └── reference/                    # user's existing depth-layer-placement Python logic (ported into addon/core/)
 ├── .vscode/                          # launch.json, settings.json (for the Blender Development extension)
+├── pyproject.toml                    # pytest config (testpaths, pythonpath, import mode)
 ├── requirements-dev.txt              # fake-bpy-module-latest, pytest, numpy, usd-core
 ├── CLAUDE.md                         # project context for Claude Code
 └── README.md                         # this file

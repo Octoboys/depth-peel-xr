@@ -49,12 +49,15 @@ Top-level repository layout:
 depth_peel_blender/                   # repo root (= current working dir)
 ├── addon/                            # the add-on package (symlinked into Blender's extensions dir)
 │   └── ...                           # see tree below
+├── tests/                            # pytest suite for addon/core/ (kept outside addon/ so
+│                                     # pytest doesn't trip on addon/__init__.py's `import bpy`)
 ├── tools/
 │   ├── install_dev_symlink.sh        # symlinks ./addon/ into Blender's extensions dir
 │   └── run_core_tests.sh             # pytest wrapper for core/ modules
 ├── .vscode/
 │   ├── launch.json                   # Blender Development extension debug config
 │   └── settings.json                 # blender.addon.loadDirectory → ./addon/
+├── pyproject.toml                    # pytest config (testpaths, pythonpath, import mode)
 ├── requirements-dev.txt              # fake-bpy-module-latest, pytest, numpy, usd-core
 └── README.md
 ```
@@ -94,8 +97,7 @@ addon/
 │   ├── occlusion.py                  # multi-view PVS culling of occluded quads
 │   └── usd_author.py                 # pxr-based USD stage authoring (UsdPreviewSurface)
 ├── paths.py                          # project-folder resolution helpers
-└── tests/
-    └── ...                           # numpy-testable core logic
+└── (tests live at repo-root tests/, not inside this package — see top-level tree)
 ```
 
 Design principle: **core/ has no `bpy` imports.** Anything pure math (depth pooling, CDF sampling, quadtree building, multi-view merging, occlusion culling, USD authoring) is testable in a plain Python environment with numpy + usd-core. `operators/` is the thin bpy-binding feeding scene data into core and writing results back.
@@ -157,7 +159,7 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 **Scope**:
 - Repo scaffolding: `addon/__init__.py` (minimal `bl_info` + register/unregister stubs), `addon/dev_reload.py`, `tools/install_dev_symlink.sh`, `tools/run_core_tests.sh`, `.vscode/launch.json`, `.vscode/settings.json`, `requirements-dev.txt`, `README.md` (onboarding instructions).
 - `addon/__init__.py` registers a trivial N-panel with a single "Hello" label — enough to prove the add-on loads and the panel shows up in the `Depth Peel XR` tab.
-- Empty `addon/core/` and `addon/tests/` with one smoke test (`def test_numpy_available(): import numpy` etc.).
+- Empty `addon/core/` and `tests/` (at repo root, not under `addon/` — see Development workflow note) with one smoke test (`def test_numpy_available(): import numpy` etc.).
 - Confirm VS Code `Blender: Start` launches Blender with the add-on registered and the panel visible.
 - Confirm editing a string in `__init__.py` and saving triggers a live reload in Blender (panel label updates).
 - Confirm `pytest` in the terminal runs the smoke test.
@@ -374,7 +376,7 @@ Primary setup: **VS Code + Jacques Lucke's "Blender Development" extension**. Th
 ### Daily cycle
 
 - **Blender-side changes** (operators, UI, properties, overlays): edit a file in VS Code → save → the running Blender reloads the add-on automatically. No restart, no manual trigger.
-- **Core/math changes** (anything in `core/`): edit → save → run pytest in VS Code's terminal (`pytest addon/tests/`) for sub-second feedback. Optionally scope to one test with `-k`. Never touches Blender.
+- **Core/math changes** (anything in `core/`): edit → save → run pytest in VS Code's terminal (`pytest tests/`) for sub-second feedback. Optionally scope to one test with `-k`. Never touches Blender.
 - **Debugging Blender code**: `Cmd+Shift+P → Blender: Start (Debug)` — VS Code attaches debugpy; set breakpoints normally; hit them next time the operator runs.
 - **Debugging core code**: standard VS Code pytest debug config.
 
@@ -395,7 +397,7 @@ Primary setup: **VS Code + Jacques Lucke's "Blender Development" extension**. Th
 ### Tooling scripts
 
 - `tools/install_dev_symlink.sh` — creates (or refreshes) the symlink from Blender's extensions dir to `./addon/`. Idempotent. Detects Blender version dir on macOS/Linux/Windows.
-- `tools/run_core_tests.sh` — `pytest -q addon/tests/` plus a one-line check that `grep -r "^import bpy\|^from bpy" addon/core/` returns nothing (enforces core's bpy-free contract).
+- `tools/run_core_tests.sh` — `pytest -q tests/` plus a one-line check that `grep -r "^import bpy\|^from bpy" addon/core/` returns nothing (enforces core's bpy-free contract). Tests live at repo-root `tests/` rather than `addon/tests/` because `addon/__init__.py` imports bpy at module load, which breaks pytest collection outside Blender.
 
 ## Open items deferred to later iterations
 

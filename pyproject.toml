@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+# Tests live at the repo root (not under addon/) because addon/__init__.py
+# imports bpy, which is only available inside Blender. Keeping tests outside
+# the addon package avoids pytest walking into that import during collection.
+# `addon` is added to pythonpath so tests can `import core.depth` etc.
+testpaths = ["tests"]
+pythonpath = ["addon"]
+addopts = "-q --import-mode=importlib"
