@@ -36,7 +36,7 @@ Implications:
 
 User-authored Python scripts implementing the layer-placement algorithms being ported into the add-on:
 
-- `docs/reference/hybrid_depth_layers.py` — hybrid importance + uniform NDC sampling with empty-layer removal. Being ported into `addon/core/layer_placement/histogram_hybrid.py`.
+- `docs/reference/hybrid_depth_layers.py` — hybrid importance + uniform NDC sampling with empty-layer removal. Being ported into `depth_peel_xr/core/layer_placement/histogram_hybrid.py`.
 - `docs/reference/importance_depth_layers.py` — pure importance-sampling variant; reference for the CDF logic, not ported directly.
 
 Reusable pieces: NDC transform, histogram → CDF inverse sampling, empty-layer detection and gap-closing. Port preserves the proven maths; input changes from EXR paths to numpy arrays from Blender render results.
@@ -45,9 +45,9 @@ Reusable pieces: NDC transform, histogram → CDF inverse sampling, empty-layer 
 
 Primary workflow: **VS Code + Jacques Lucke's "Blender Development" extension**. See `docs/implementation_plan.md` → "Development workflow" for full setup instructions.
 
-- `tools/install_dev_symlink.sh` symlinks `./addon/` into Blender's extensions directory so edits land live.
+- `tools/install_dev_symlink.sh` symlinks `./depth_peel_xr/` into Blender's extensions directory so edits land live.
 - `requirements-dev.txt` pins `fake-bpy-module-latest`, `pytest`, `numpy`, `usd-core` for autocomplete and core/ testing.
-- `addon/dev_reload.py` is the manual reload fallback when VS Code isn't in play.
+- `depth_peel_xr/dev_reload.py` is the manual reload fallback when VS Code isn't in play.
 - `core/` never imports `bpy` — all pure-math modules are testable via pytest without Blender.
 
 ## When starting a new session

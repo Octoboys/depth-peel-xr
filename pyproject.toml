@@ -1,8 +1,9 @@
 [tool.pytest.ini_options]
-# Tests live at the repo root (not under addon/) because addon/__init__.py
-# imports bpy, which is only available inside Blender. Keeping tests outside
-# the addon package avoids pytest walking into that import during collection.
-# `addon` is added to pythonpath so tests can `import core.depth` etc.
+# Tests live at the repo root (not inside the addon package) because
+# depth_peel_xr/__init__.py imports bpy, which is only available inside
+# Blender. Keeping tests outside the package avoids pytest walking into
+# that import during collection. `depth_peel_xr` is on pythonpath so
+# tests can `import core.depth` etc.
 testpaths = ["tests"]
-pythonpath = ["addon"]
+pythonpath = ["depth_peel_xr"]
 addopts = "-q --import-mode=importlib"

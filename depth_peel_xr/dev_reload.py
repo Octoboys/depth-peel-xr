@@ -14,20 +14,17 @@ from __future__ import annotations
 import importlib
 import sys
 
-# The add-on may be mounted under either path depending on install method:
-# `user_default` for tools/install_dev_symlink.sh, `vscode_development`
-# for Jacques Lucke's VS Code extension. Try both so this script works
-# regardless of how the add-on got onto disk.
-_CANDIDATE_ROOTS = (
-    "bl_ext.user_default.depth_peel_xr",
-    "bl_ext.vscode_development.addon",
-)
+# Both install paths — tools/install_dev_symlink.sh and Jacques Lucke's
+# VS Code extension — mount the add-on under this name, because the repo
+# folder name (depth_peel_xr) matches the manifest id.
+_ROOT = "bl_ext.user_default.depth_peel_xr"
+_VSCODE_ROOT = "bl_ext.vscode_development.depth_peel_xr"
 
 
 def reload() -> None:
     reloaded: list[str] = []
 
-    for root in _CANDIDATE_ROOTS:
+    for root in (_ROOT, _VSCODE_ROOT):
         if root not in sys.modules:
             continue
 

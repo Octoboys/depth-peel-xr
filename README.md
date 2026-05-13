@@ -66,7 +66,7 @@ After opening the repo in VS Code, three one-off steps in the UI. The JSON setti
 ### Daily loop
 
 - `Cmd+Shift+P → Blender: Start` — launches Blender with the add-on registered.
-- Save any file under `addon/` — triggers a live add-on reload in the running Blender (no restart).
+- Save any file under `depth_peel_xr/` — triggers a live add-on reload in the running Blender (no restart).
 - `Cmd+Shift+P → Blender: Reload Addons` — manual reload fallback if auto-reload misfires.
 - `pytest tests/` in the terminal — runs the `core/` unit tests without touching Blender.
 
@@ -76,13 +76,13 @@ See the **Development workflow** section of the implementation plan for full det
 
 ```
 depth-peel-xr/
-├── addon/                            # the add-on package (symlinked into Blender's extensions dir)
-├── tests/                            # pytest suite for addon/core/ (outside addon/ so pytest
-│                                     # collection isn't blocked by addon/__init__.py's bpy import)
+├── depth_peel_xr/                            # the add-on package (symlinked into Blender's extensions dir)
+├── tests/                            # pytest suite for depth_peel_xr/core/ (outside depth_peel_xr/ so pytest
+│                                     # collection isn't blocked by depth_peel_xr/__init__.py's bpy import)
 ├── tools/                            # install_dev_symlink.sh, run_core_tests.sh
 ├── docs/
 │   ├── implementation_plan.md        # authoritative phase-by-phase plan
-│   └── reference/                    # user's existing depth-layer-placement Python logic (ported into addon/core/)
+│   └── reference/                    # user's existing depth-layer-placement Python logic (ported into depth_peel_xr/core/)
 ├── .vscode/                          # launch.json, settings.json (for the Blender Development extension)
 ├── pyproject.toml                    # pytest config (testpaths, pythonpath, import mode)
 ├── requirements-dev.txt              # fake-bpy-module-latest, pytest, numpy, usd-core
@@ -94,14 +94,14 @@ Addon-package sub-tree and module responsibilities are documented in the impleme
 
 ## Design principles
 
-- **`addon/core/` never imports `bpy`.** All pure-math modules (depth pooling, CDF sampling, quadtree building, multi-view reprojection, occlusion culling, USD authoring) are testable in plain Python via `pytest`.
+- **`depth_peel_xr/core/` never imports `bpy`.** All pure-math modules (depth pooling, CDF sampling, quadtree building, multi-view reprojection, occlusion culling, USD authoring) are testable in plain Python via `pytest`.
 - **Every Blender-mutating operator has a matching cleanup operator**, and a master `Clean up all` runs them in sequence. Running the pipeline leaves no orphan datablocks on reset.
 - **USD written directly via `pxr.Usd`** (not Blender's built-in exporter), for precise control over prim hierarchy, geom subsets, and material binding. `pxr` is not bundled with Blender — the add-on detects it and surfaces an install prompt if missing.
 - **Layer placement is a pluggable strategy.** V1 ships two strategies (user-count + fixed distribution; histogram-driven hybrid CDF + uniform); the `LayerPlacementStrategy` ABC leaves room for budget-driven optimisation and manual gizmos without touching the operator layer.
 
 ## Reference material
 
-- [`docs/reference/hybrid_depth_layers.py`](docs/reference/hybrid_depth_layers.py) — original hybrid importance + uniform NDC sampling with empty-layer removal. Being ported into `addon/core/layer_placement/histogram_hybrid.py`.
+- [`docs/reference/hybrid_depth_layers.py`](docs/reference/hybrid_depth_layers.py) — original hybrid importance + uniform NDC sampling with empty-layer removal. Being ported into `depth_peel_xr/core/layer_placement/histogram_hybrid.py`.
 - [`docs/reference/importance_depth_layers.py`](docs/reference/importance_depth_layers.py) — pure importance-sampling variant; CDF-logic reference.
 
 The reusable pieces — NDC transform, histogram → CDF inverse sampling, empty-layer detection, and gap-closing — port directly; only the depth-loading front-end changes (Blender render result → numpy, instead of OIIO EXR read).

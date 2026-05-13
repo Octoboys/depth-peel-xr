@@ -47,25 +47,25 @@ Top-level repository layout:
 
 ```
 depth_peel_blender/                   # repo root (= current working dir)
-├── addon/                            # the add-on package (symlinked into Blender's extensions dir)
+├── depth_peel_xr/                            # the add-on package (symlinked into Blender's extensions dir)
 │   └── ...                           # see tree below
-├── tests/                            # pytest suite for addon/core/ (kept outside addon/ so
-│                                     # pytest doesn't trip on addon/__init__.py's `import bpy`)
+├── tests/                            # pytest suite for depth_peel_xr/core/ (kept outside depth_peel_xr/ so
+│                                     # pytest doesn't trip on depth_peel_xr/__init__.py's `import bpy`)
 ├── tools/
-│   ├── install_dev_symlink.sh        # symlinks ./addon/ into Blender's extensions dir
+│   ├── install_dev_symlink.sh        # symlinks ./depth_peel_xr/ into Blender's extensions dir
 │   └── run_core_tests.sh             # pytest wrapper for core/ modules
 ├── .vscode/
 │   ├── launch.json                   # Blender Development extension debug config
-│   └── settings.json                 # blender.addon.loadDirectory → ./addon/
+│   └── settings.json                 # blender.addon.loadDirectory → ./depth_peel_xr/
 ├── pyproject.toml                    # pytest config (testpaths, pythonpath, import mode)
 ├── requirements-dev.txt              # fake-bpy-module-latest, pytest, numpy, usd-core
 └── README.md
 ```
 
-Add-on package (`addon/`):
+Add-on package (`depth_peel_xr/`):
 
 ```
-addon/
+depth_peel_xr/
 ├── __init__.py                       # bl_info + register()/unregister()
 ├── dev_reload.py                     # manual reload fallback (unregister + purge sys.modules + re-register)
 ├── preferences.py                    # add-on prefs (pxr install status, global defaults)
@@ -157,9 +157,9 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 **Goal**: hot-reload dev loop working end-to-end before any feature code gets written.
 
 **Scope**:
-- Repo scaffolding: `addon/__init__.py` (minimal `bl_info` + register/unregister stubs), `addon/dev_reload.py`, `tools/install_dev_symlink.sh`, `tools/run_core_tests.sh`, `.vscode/launch.json`, `.vscode/settings.json`, `requirements-dev.txt`, `README.md` (onboarding instructions).
-- `addon/__init__.py` registers a trivial N-panel with a single "Hello" label — enough to prove the add-on loads and the panel shows up in the `Depth Peel XR` tab.
-- Empty `addon/core/` and `tests/` (at repo root, not under `addon/` — see Development workflow note) with one smoke test (`def test_numpy_available(): import numpy` etc.).
+- Repo scaffolding: `depth_peel_xr/__init__.py` (minimal `bl_info` + register/unregister stubs), `depth_peel_xr/dev_reload.py`, `tools/install_dev_symlink.sh`, `tools/run_core_tests.sh`, `.vscode/launch.json`, `.vscode/settings.json`, `requirements-dev.txt`, `README.md` (onboarding instructions).
+- `depth_peel_xr/__init__.py` registers a trivial N-panel with a single "Hello" label — enough to prove the add-on loads and the panel shows up in the `Depth Peel XR` tab.
+- Empty `depth_peel_xr/core/` and `tests/` (at repo root, not under `depth_peel_xr/` — see Development workflow note) with one smoke test (`def test_numpy_available(): import numpy` etc.).
 - Confirm VS Code `Blender: Start` launches Blender with the add-on registered and the panel visible.
 - Confirm editing a string in `__init__.py` and saving triggers a live reload in Blender (panel label updates).
 - Confirm `pytest` in the terminal runs the smoke test.
@@ -169,7 +169,7 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 - Edit + save picks up without restart.
 - `tools/run_core_tests.sh` passes.
 
-**Critical files**: `addon/__init__.py`, `addon/dev_reload.py`, `tools/install_dev_symlink.sh`, `tools/run_core_tests.sh`, `.vscode/launch.json`, `.vscode/settings.json`, `requirements-dev.txt`.
+**Critical files**: `depth_peel_xr/__init__.py`, `depth_peel_xr/dev_reload.py`, `tools/install_dev_symlink.sh`, `tools/run_core_tests.sh`, `.vscode/launch.json`, `.vscode/settings.json`, `requirements-dev.txt`.
 
 **Verification**: manual — run through the onboarding sequence from a clean shell; demonstrate hot reload.
 
@@ -201,7 +201,7 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 - Save+reopen preserves rig and property state.
 - Project folder auto-resolves to `<blend_dir>/depth_peel_xr/<scene_name>/`; warn if .blend is unsaved.
 
-**Critical files**: `addon/__init__.py`, `addon/properties.py`, `addon/paths.py`, `addon/operators/portal_rig.py`, `addon/operators/inspect.py`, `addon/ui/n_panel.py`, `addon/ui/overlays.py`.
+**Critical files**: `depth_peel_xr/__init__.py`, `depth_peel_xr/properties.py`, `depth_peel_xr/paths.py`, `depth_peel_xr/operators/portal_rig.py`, `depth_peel_xr/operators/inspect.py`, `depth_peel_xr/ui/n_panel.py`, `depth_peel_xr/ui/overlays.py`.
 
 **Verification**: manual — add rig, tweak properties, inspect cameras, toggle collections, save/load.
 
@@ -368,9 +368,9 @@ Primary setup: **VS Code + Jacques Lucke's "Blender Development" extension**. Th
 
 1. Clone/open the repo at `<working_dir>`.
 2. Create a Python venv for dev tooling (autocomplete + tests only; Blender uses its own bundled Python): `python -m venv .venv && source .venv/bin/activate && pip install -r requirements-dev.txt`. Contents: `fake-bpy-module-latest`, `pytest`, `numpy`, `usd-core`.
-3. Run `tools/install_dev_symlink.sh` to symlink `<working_dir>/addon/` into Blender's extensions directory (`~/Library/Application Support/Blender/5.0/extensions/user_default/depth_peel_xr` on macOS; the script detects the platform).
+3. Run `tools/install_dev_symlink.sh` to symlink `<working_dir>/depth_peel_xr/` into Blender's extensions directory (`~/Library/Application Support/Blender/5.0/extensions/user_default/depth_peel_xr` on macOS; the script detects the platform).
 4. Install VS Code + the "Blender Development" extension.
-5. Open the repo in VS Code. The shipped `.vscode/settings.json` points `blender.addon.loadDirectory` at `./addon/`.
+5. Open the repo in VS Code. The shipped `.vscode/settings.json` points `blender.addon.loadDirectory` at `./depth_peel_xr/`.
 6. `Cmd+Shift+P → Blender: Start` launches Blender with the add-on registered.
 
 ### Daily cycle
@@ -388,7 +388,7 @@ Primary setup: **VS Code + Jacques Lucke's "Blender Development" extension**. Th
 
 ### Fallback — no VS Code available
 
-- Open Blender's Text Editor, load `addon/dev_reload.py`, click Run Script. It unregisters, purges all `depth_peel_xr.*` entries from `sys.modules`, re-imports, and re-registers. Binds cleanly to a custom keymap for one-keystroke reload.
+- Open Blender's Text Editor, load `depth_peel_xr/dev_reload.py`, click Run Script. It unregisters, purges all `depth_peel_xr.*` entries from `sys.modules`, re-imports, and re-registers. Binds cleanly to a custom keymap for one-keystroke reload.
 
 ### Autocomplete
 
@@ -396,8 +396,8 @@ Primary setup: **VS Code + Jacques Lucke's "Blender Development" extension**. Th
 
 ### Tooling scripts
 
-- `tools/install_dev_symlink.sh` — creates (or refreshes) the symlink from Blender's extensions dir to `./addon/`. Idempotent. Detects Blender version dir on macOS/Linux/Windows.
-- `tools/run_core_tests.sh` — `pytest -q tests/` plus a one-line check that `grep -r "^import bpy\|^from bpy" addon/core/` returns nothing (enforces core's bpy-free contract). Tests live at repo-root `tests/` rather than `addon/tests/` because `addon/__init__.py` imports bpy at module load, which breaks pytest collection outside Blender.
+- `tools/install_dev_symlink.sh` — creates (or refreshes) the symlink from Blender's extensions dir to `./depth_peel_xr/`. Idempotent. Detects Blender version dir on macOS/Linux/Windows.
+- `tools/run_core_tests.sh` — `pytest -q tests/` plus a one-line check that `grep -r "^import bpy\|^from bpy" depth_peel_xr/core/` returns nothing (enforces core's bpy-free contract). Tests live at repo-root `tests/` rather than `depth_peel_xr/tests/` because `depth_peel_xr/__init__.py` imports bpy at module load, which breaks pytest collection outside Blender.
 
 ## Open items deferred to later iterations
 

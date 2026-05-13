@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Symlink ./addon/ into Blender's user-extensions directory so the add-on
-# loads when Blender is launched normally (outside VS Code).
+# Symlink ./depth_peel_xr/ into Blender's user-extensions directory so the
+# add-on loads when Blender is launched normally (outside VS Code).
 #
 # Idempotent: re-running is safe.
 #
@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ADDON_SRC="$REPO_ROOT/addon"
+ADDON_SRC="$REPO_ROOT/depth_peel_xr"
 ADDON_ID="depth_peel_xr"
 
 case "$(uname -s)" in

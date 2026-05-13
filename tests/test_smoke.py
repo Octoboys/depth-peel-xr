@@ -2,9 +2,9 @@
 
 These tests do *not* import `bpy`: that's deliberate. `fake-bpy-module`
 installs stub files for Pylance autocomplete but nothing runtime-importable
-under that name. `addon/core/` is also bpy-free by contract (enforced by
-tools/run_core_tests.sh), so future numpy-only tests can live alongside
-these without pulling Blender into the picture.
+under that name. `depth_peel_xr/core/` is also bpy-free by contract
+(enforced by tools/run_core_tests.sh), so future numpy-only tests can live
+alongside these without pulling Blender into the picture.
 """
 
 

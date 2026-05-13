@@ -34,8 +34,11 @@ ENV/
 *.blend2
 *.blend@
 
-# Generated output directory (per project design: all baked layers, captures, USDs)
-depth_peel_xr/
+# Generated bake output — shape: <blend_dir>/depth_peel_xr/<scene>/{temp,captures,usd}/
+# Narrow patterns so the add-on's own `depth_peel_xr/` package (our repo root) isn't ignored.
+**/depth_peel_xr/*/temp/
+**/depth_peel_xr/*/captures/
+**/depth_peel_xr/*/usd/
 
 # OIIO / render intermediates scattered at root level (shouldn't happen, but defensive)
 /*.exr
