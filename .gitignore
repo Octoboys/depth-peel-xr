@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Claude Code local metadata
+.claude/
+
+# VS Code (commit only the dev workflow configs)
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+
+# JetBrains
+.idea/
+
+# Blender auto-saves and temps
+*.blend1
+*.blend2
+*.blend@
+
+# Generated output directory (per project design: all baked layers, captures, USDs)
+depth_peel_xr/
+
+# OIIO / render intermediates scattered at root level (shouldn't happen, but defensive)
+/*.exr
+/*.png
+/*.usda
+/*.usd
+/*.usdc
+/*.usdz
+
+# Editor temp files
+*.swp
+*.bak
+*~
