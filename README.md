@@ -48,10 +48,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-# 3. Symlink the add-on into Blender's extensions dir
-./tools/install_dev_symlink.sh        # created in Phase 0
-
-# 4. Install the Blender Development VS Code extension
+# 3. Install the Blender Development VS Code extension
 code --install-extension jacqueslucke.blender-development
 ```
 
@@ -63,9 +60,21 @@ After opening the repo in VS Code, three one-off steps in the UI. The JSON setti
 2. **Confirm `reloadOnSave` is applied at workspace scope.** `Cmd+,` → search `blender.addon.reloadOnSave` → click the **Workspace** tab directly below the search bar → the checkbox must be ticked. If it's empty despite being `true` in `.vscode/settings.json`, tick it in the UI once — the first-time workspace load sometimes doesn't apply the JSON value until it's touched through the UI. Without this, `Blender: Reload Addons` still works manually but saves won't trigger reload.
 3. **Point the extension at the right Blender.** First time you run `Cmd+Shift+P → Blender: Start`, it prompts for a Blender binary. On the primary dev machine this lives at `/Applications/Blender_5.app/Contents/MacOS/Blender` (non-standard app name — Blender 4.4 coexists as `Blender_44.app`). If you later need to re-point it, edit `blender.executables` via `Cmd+Shift+P → Preferences: Open User Settings (JSON)`.
 
+### First-time Blender launch
+
+1. `Cmd+Shift+P → Blender: Start` — the first launch does two things: registers Blender's `vscode_development` extensions repo, and attempts to symlink our add-on into it.
+2. If the add-on panel ("Depth Peel XR" tab in the N-panel) appears, the symlink step succeeded — skip to step 5.
+3. If you hit a `ModuleNotFoundError: No module named 'bl_ext.vscode_development.depth_peel_xr'` (VS Code's auto-link step is known to silently no-op in some states), quit Blender and run the fallback:
+   ```bash
+   ./tools/install_dev_symlink.sh
+   ```
+   This creates the symlink at the exact path VS Code's save-reload handler expects (`extensions/vscode_development/depth_peel_xr`). Then `Blender: Start` again.
+4. In Blender, **Edit → Preferences → Get Extensions**, find "Depth Peel XR" and tick the enable checkbox. If any stale `bl_ext.user_default.depth_peel_xr` ghost entries show up broken, remove them.
+5. **Hamburger menu → Save Preferences** — locks in auto-enable for every future launch so step 4 is one-off.
+
 ### Daily loop
 
-- `Cmd+Shift+P → Blender: Start` — launches Blender with the add-on registered.
+- `Cmd+Shift+P → Blender: Start` — launches Blender with the add-on already enabled (thanks to saved prefs).
 - Save any file under `depth_peel_xr/` — triggers a live add-on reload in the running Blender (no restart).
 - `Cmd+Shift+P → Blender: Reload Addons` — manual reload fallback if auto-reload misfires.
 - `pytest tests/` in the terminal — runs the `core/` unit tests without touching Blender.
