@@ -4,7 +4,7 @@
   "python.testing.pytestArgs": ["tests"],
   "python.analysis.extraPaths": ["${workspaceFolder}/depth_peel_xr"],
 
-  "blender.addon.loadDirectory": "${workspaceFolder}/depth_peel_xr",
+  "blender.addon.loadDirectory": "depth_peel_xr",
   "blender.addon.reloadOnSave": true,
   "blender.addon.justMyCode": false,
 
