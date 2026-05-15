@@ -24,7 +24,7 @@ This repo is in early bootstrap. Implementation is broken into phases with expli
 |---|---|---|
 | 0 | Dev environment bootstrap | complete |
 | 1 | Portal Rig + Infrastructure | complete |
-| 2 | Layer Placement | pending |
+| 2 | Layer Placement | in progress (fixed-distribution shipped; depth probe + histogram_hybrid pending) |
 | 3 | Multi-view Capture | pending |
 | 4 | Reconstruction + Preview | pending |
 | 5 | Occlusion Culling | pending |

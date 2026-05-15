@@ -1,5 +1,7 @@
 import bpy
 from bpy.props import (
+    CollectionProperty,
+    EnumProperty,
     FloatProperty,
     IntProperty,
     PointerProperty,
@@ -10,8 +12,16 @@ from bpy.types import Object, PropertyGroup
 
 def _on_rig_param_change(self, context):
     from .operators.portal_rig import resync_rig_from_props
+    from .operators.layer_placement import repopulate_layers_if_active
 
     resync_rig_from_props(context)
+    repopulate_layers_if_active(context)
+
+
+def _on_layer_param_change(self, context):
+    from .operators.layer_placement import repopulate_layers_if_active
+
+    repopulate_layers_if_active(context)
 
 
 class PortalRigProps(PropertyGroup):
@@ -50,6 +60,34 @@ class PortalRigProps(PropertyGroup):
         step=10,
         update=_on_rig_param_change,
     )
+    max_depth: FloatProperty(
+        name="Max Depth",
+        description=(
+            "Maximum scene depth (metres past the Portal) the rig captures. "
+            "Layer placement subdivides [headplane_offset + min_depth, "
+            "headplane_offset + max_depth]"
+        ),
+        default=20.0,
+        min=0.01,
+        soft_max=200.0,
+        precision=2,
+        step=10,
+        update=_on_layer_param_change,
+    )
+    min_depth: FloatProperty(
+        name="Min Depth",
+        description=(
+            "Offset of the first layer past the Portal, in metres. Push back "
+            "the near boundary to skip empty space between the Portal and the "
+            "first scene content"
+        ),
+        default=0.0,
+        min=0.0,
+        soft_max=50.0,
+        precision=2,
+        step=10,
+        update=_on_layer_param_change,
+    )
     grid_n: IntProperty(
         name="Grid N",
         description="N×N camera grid on the head-plane (corners-inclusive)",
@@ -81,7 +119,52 @@ class PathsProps(PropertyGroup):
     )
 
 
-CLASSES = (PortalRigProps, PathsProps)
+class LayerEntry(PropertyGroup):
+    near: FloatProperty(name="Near", description="Layer near depth (metres, camera-space)")
+    far: FloatProperty(name="Far", description="Layer far depth (metres, camera-space)")
+
+
+def _strategy_items(self, context):
+    return (
+        ("FIXED", "Fixed Distribution", "Analytic spacing — uniform-Z, 1/Z, or log"),
+        ("HYBRID", "Histogram Hybrid (coming soon)", "Importance + uniform — not yet implemented"),
+    )
+
+
+_DISTRIBUTION_ITEMS = (
+    ("UNIFORM_Z", "Uniform Z", "Even spacing in linear depth"),
+    ("ONE_OVER_Z", "1 / Z", "Even spacing in inverse depth (perceptually uniform near-field)"),
+    ("LOG", "Log Z", "Even spacing in log depth"),
+)
+
+
+class LayerPlacementProps(PropertyGroup):
+    strategy: EnumProperty(
+        name="Strategy",
+        description="Layer-placement algorithm",
+        items=_strategy_items,
+        default=0,
+        update=_on_layer_param_change,
+    )
+    distribution: EnumProperty(
+        name="Distribution",
+        description="Spacing curve for fixed-distribution placement",
+        items=_DISTRIBUTION_ITEMS,
+        default="LOG",
+        update=_on_layer_param_change,
+    )
+    layer_count: IntProperty(
+        name="Layers",
+        description="Number of depth layers to place",
+        default=4,
+        min=1,
+        soft_max=16,
+        update=_on_layer_param_change,
+    )
+    layers: CollectionProperty(type=LayerEntry)
+
+
+CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps)
 
 
 def register():
@@ -89,9 +172,11 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.dpx_portal_rig = PointerProperty(type=PortalRigProps)
     bpy.types.Scene.dpx_paths = PointerProperty(type=PathsProps)
+    bpy.types.Scene.dpx_layer_placement = PointerProperty(type=LayerPlacementProps)
 
 
 def unregister():
+    del bpy.types.Scene.dpx_layer_placement
     del bpy.types.Scene.dpx_paths
     del bpy.types.Scene.dpx_portal_rig
     for cls in reversed(CLASSES):

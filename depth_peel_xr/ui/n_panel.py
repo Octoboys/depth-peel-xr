@@ -31,11 +31,9 @@ class DEPTHPEELXR_PT_main(Panel):
             col.prop(props, "portal_height")
             col.prop(props, "headplane_offset")
             col.prop(props, "grid_n")
-            col.separator()
             col.prop(props, "viewing_resolution")
-
-            rig_box.separator()
-            rig_box.operator(
+            col.separator(factor=1.5)
+            col.operator(
                 "depthpeelxr.cleanup_portal_rig",
                 text="Clean Up Portal Rig",
                 icon="TRASH",
@@ -74,11 +72,37 @@ class DEPTHPEELXR_PT_main(Panel):
             inner.operator(
                 "depthpeelxr.view_camera_next", text="", icon="TRIA_RIGHT"
             )
-            inspect_box.operator(
+            inspect_btn_col = inspect_box.column(align=True)
+            inspect_btn_col.operator(
                 "depthpeelxr.exit_camera_view", icon="VIEW_PERSPECTIVE"
             )
-            inspect_box.operator(
+            inspect_btn_col.separator()
+            inspect_btn_col.operator(
                 "depthpeelxr.toggle_preview", icon="RESTRICT_VIEW_OFF"
+            )
+
+            lp = scene.dpx_layer_placement
+            layers_box = layout.box()
+            layers_box.label(text="Layer Placement", icon="MOD_BUILD")
+            col = layers_box.column(align=True)
+            col.prop(lp, "strategy")
+            row = col.row()
+            row.enabled = lp.strategy == "FIXED"
+            row.prop(lp, "distribution")
+            col.separator()
+            col.prop(lp, "layer_count")
+            col.prop(props, "min_depth")
+            col.prop(props, "max_depth")
+            col.separator(factor=1.5)
+            count = len(lp.layers)
+            status = f"{count} layer{'s' if count != 1 else ''} placed" if count else "No layers placed"
+            col.label(text=status)
+            place_row = col.row(align=True)
+            place_row.enabled = lp.strategy == "FIXED"
+            place_row.operator("depthpeelxr.place_layers", icon="PLAY")
+            col.separator()
+            col.operator(
+                "depthpeelxr.cleanup_layers", text="Clean Up Layers", icon="TRASH"
             )
 
         project_box = layout.box()

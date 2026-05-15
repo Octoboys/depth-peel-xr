@@ -1,4 +1,5 @@
-"""Viewport overlays: head-plane wireframe + NxN camera-grid dots.
+"""Viewport overlays: head-plane wireframe + NxN camera-grid dots, plus
+N+1 layer-boundary planes when Phase 2 has placed layers.
 
 Drawn via a SpaceView3D POST_VIEW handler so the head-plane stays unselectable
 and adds zero datablocks to the scene. Reads PortalRigProps + Portal world
@@ -15,6 +16,39 @@ _HANDLE = None
 
 _RECT_COLOR = (0.4, 0.8, 1.0, 1.0)
 _GRID_COLOR = (1.0, 0.85, 0.2, 1.0)
+_BOUNDARY_INTERIOR_COLOR = (0.3, 1.0, 0.4, 0.18)
+_BOUNDARY_DEEPEST_COLOR = (1.0, 0.4, 0.7, 0.22)
+
+
+def _super_frustum_half_extents(d: float, half_w_p: float, half_h_p: float, ho: float):
+    """Half-width/half-height of the super-frustum cross-section at camera-
+    space depth `d`. At d <= ho all cameras frame the same portal rectangle;
+    past the portal the union grows linearly so each camera's off-axis
+    frustum is contained.
+    """
+    if ho <= 0.0 or d <= ho:
+        return half_w_p, half_h_p
+    scale = 2.0 * d / ho - 1.0
+    return half_w_p * scale, half_h_p * scale
+
+
+def _boundary_quad_corners(M, d: float, half_w_p: float, half_h_p: float, ho: float):
+    half_w, half_h = _super_frustum_half_extents(d, half_w_p, half_h_p, ho)
+    y = ho - d
+    return [
+        M @ Vector((-half_w, y, -half_h)),
+        M @ Vector(( half_w, y, -half_h)),
+        M @ Vector(( half_w, y,  half_h)),
+        M @ Vector((-half_w, y,  half_h)),
+    ]
+
+
+def _boundary_depths(scene) -> list[float]:
+    lp = getattr(scene, "dpx_layer_placement", None)
+    if lp is None or len(lp.layers) == 0:
+        return []
+    layers = list(lp.layers)
+    return [layers[0].near] + [layer.far for layer in layers]
 
 
 def _draw():
@@ -59,6 +93,23 @@ def _draw():
 
     shader = gpu.shader.from_builtin("UNIFORM_COLOR")
     shader.bind()
+
+    boundary_depths = _boundary_depths(scene)
+    if boundary_depths:
+        gpu.state.blend_set("ALPHA")
+        gpu.state.depth_test_set("LESS_EQUAL")
+        for i, d in enumerate(boundary_depths):
+            quad = _boundary_quad_corners(M, d, half_w, half_h, ho)
+            tris = [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]
+            color = (
+                _BOUNDARY_DEEPEST_COLOR
+                if i == len(boundary_depths) - 1
+                else _BOUNDARY_INTERIOR_COLOR
+            )
+            shader.uniform_float("color", color)
+            batch_for_shader(shader, "TRIS", {"pos": tris}).draw(shader)
+        gpu.state.blend_set("NONE")
+        gpu.state.depth_test_set("NONE")
 
     gpu.state.line_width_set(2.0)
     shader.uniform_float("color", _RECT_COLOR)

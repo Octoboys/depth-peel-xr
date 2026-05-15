@@ -216,13 +216,24 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 - `core/layer_placement/base.py` — `LayerPlacementStrategy` ABC.
 - `core/layer_placement/fixed_distribution.py` — user-count + uniform-Z / 1-over-Z / log.
 - `core/layer_placement/histogram_hybrid.py` — port of `hybrid_depth_layers.py` logic.
+- Rig depth-scope properties on `PortalRigProps`:
+  - `min_depth` (metres past the portal; default 0). Pushes the first layer's near boundary into the scene to skip empty near-portal volume.
+  - `max_depth` (metres past the portal; default 20). Defines the deepest plane.
+  - Layer placement subdivides `[headplane_offset + min_depth, headplane_offset + max_depth]`.
 - `DEPTHPEELXR_OT_place_layers` operator:
   - Configures centre camera FoV to super-frustum through portal.
   - Renders Z pass only at viewing resolution (fast).
+  - When `min_depth > 0`, sets the probe camera's `clip_start = headplane_offset + min_depth`, `clip_end = headplane_offset + max_depth` for the duration of the render — keeps the histogram free of empty-near-portal pixels and gives the depth buffer its full precision across the placement scope. Save/restore around the render.
   - Runs selected strategy, stores `layers` list on scene props.
+  - Live recompute: changing `min_depth`, `max_depth`, `distribution`, or `layer_count` re-runs the strategy automatically when FIXED is selected and layers are already populated (cheap pure math).
   - Updates viewport overlay to show **all `N+1` unique layer boundaries** as partially-transparent rectangles, each scaled to match the centre camera's super-frustum projected to that depth (so each plane frames what the cameras see at its depth). One plane per layer's near edge plus a final plane at the last layer's far edge. The deepest plane (rig depth scope) is **pink**; all interior planes are **green**.
 - `DEPTHPEELXR_OT_cleanup_layers`: clears layer list and overlay; reverts camera-config changes.
-- N-panel section `Layer Placement`: strategy dropdown, per-strategy params (layer count, distribution), `Analyse & Place`, cleanup button.
+- N-panel section `Layer Placement`: strategy dropdown, per-strategy params (layer count, distribution), `min_depth` / `max_depth` sliders, `Analyse & Place`, cleanup button.
+
+**Status**: shipped in slices.
+
+- **Slice 1 (shipped)** — fixed-distribution end-to-end. `core/layer_placement/{base,fixed_distribution}.py`, scene props (`min_depth`, `max_depth`, strategy/distribution/layer_count, layer collection), place/cleanup operators, N+1 boundary-plane overlay, N-panel UI, live recompute on param change. No depth probe — fixed_distribution is analytic. HYBRID enum value exposed in the dropdown but greyed out. 14 pytest cases for the three distributions.
+- **Slice 2 (pending)** — `core/depth.py` (Z-pass NDC + pooling), `histogram_hybrid` strategy port, depth-probe render in the operator with clip-range matching, parity tests against `docs/reference/hybrid_depth_layers.py`.
 
 **Acceptance**:
 - Single centre-camera depth probe is sufficient (verified on a synthetic scene — no need for multi-view at this stage).
