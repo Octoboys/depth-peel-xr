@@ -15,7 +15,7 @@ from bpy.types import Operator
 from mathutils import Matrix, Vector
 
 from ..core.layer_placement import Distribution, FixedDistribution, HistogramHybrid
-from .portal_rig import _camera_local_rotation_4x4
+from .portal_rig import camera_local_rotation_4x4
 
 
 _PROBE_CAM_NAME = "DPX_Probe_temp"
@@ -59,7 +59,7 @@ def _create_probe_camera(scene, rig, clip_start: float, clip_end: float) -> bpy.
     cam_obj = bpy.data.objects.new(_PROBE_CAM_NAME, cam_data)
     scene.collection.objects.link(cam_obj)
 
-    rot = _camera_local_rotation_4x4()
+    rot = camera_local_rotation_4x4()
     cam_obj.matrix_world = (
         portal.matrix_world
         @ Matrix.Translation(Vector((0.0, rig.headplane_offset, 0.0)))

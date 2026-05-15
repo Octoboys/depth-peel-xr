@@ -90,7 +90,7 @@ depth-peel-xr/
 ├── depth_peel_xr/                            # the add-on package (symlinked into Blender's extensions dir)
 ├── tests/                            # pytest suite for depth_peel_xr/core/ (outside depth_peel_xr/ so pytest
 │                                     # collection isn't blocked by depth_peel_xr/__init__.py's bpy import)
-├── tools/                            # install_dev_symlink.sh, run_core_tests.sh
+├── tools/                            # install_dev_symlink.sh, run_core_tests.sh, debug_probe.py, introspect_compositor_api.py
 ├── docs/
 │   ├── implementation_plan.md        # authoritative phase-by-phase plan
 │   └── reference/                    # user's existing depth-layer-placement Python logic (ported into depth_peel_xr/core/)

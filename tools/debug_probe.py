@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "depth_peel_xr"))
 
 # Pull in the standalone helpers without registering the whole add-on.
 # (The probe doesn't depend on operator registration.)
-from operators.portal_rig import _camera_local_rotation_4x4  # noqa: E402
+from operators.portal_rig import camera_local_rotation_4x4  # noqa: E402
 
 
 PROBE_NODE_TREE_NAME = "DPX_ProbeCompositor_temp"
@@ -63,7 +63,7 @@ def create_probe_camera(scene, headplane_offset, portal_width):
     cam_obj = bpy.data.objects.new("DPX_Probe_temp", cam_data)
     scene.collection.objects.link(cam_obj)
 
-    rot = _camera_local_rotation_4x4()
+    rot = camera_local_rotation_4x4()
     cam_obj.matrix_world = Matrix.Translation(Vector((0.0, headplane_offset, 0.0))) @ rot
 
     cam_data.type = "PERSP"

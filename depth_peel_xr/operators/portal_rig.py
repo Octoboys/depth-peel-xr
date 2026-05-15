@@ -23,7 +23,7 @@ ANCHOR_NAME = "DPX_HeadplaneAnchor"
 CAM_PREFIX = "DPX_View_"
 
 
-def _camera_local_rotation_4x4() -> Matrix:
+def camera_local_rotation_4x4() -> Matrix:
     # Map cam axes (in image space) into Anchor-local axes:
     #   cam +X = anchor -X   (image right is anchor left, expected for a
     #                         camera facing back toward -Y from +Y)
@@ -133,7 +133,7 @@ def _configure_camera(
     portal_w: float,
     portal_h: float,
 ) -> None:
-    rot = _camera_local_rotation_4x4()
+    rot = camera_local_rotation_4x4()
     cam_obj.matrix_local = Matrix.Translation(Vector((cx, 0.0, cz))) @ rot
 
     cam = cam_obj.data
