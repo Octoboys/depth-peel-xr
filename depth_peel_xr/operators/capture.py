@@ -114,6 +114,31 @@ def _engine_samples(scene, engine: str) -> tuple[str, int] | None:
     return None
 
 
+def _captures_have_layout_orphans(captures: Path, n_layers: int, n_views: int) -> bool:
+    """Return True if any file under `captures` would be orphaned by a
+    fresh run with the current `(n_layers, n_views)` layout.
+
+    Layout-matching content (same dirs, same filenames) is fine — the
+    new run overwrites those cleanly. Orphans (e.g., a `view_08.exr`
+    left over after grid_n was reduced from 3 to 2) would mislead Phase
+    4 consumers that walk the captures dir.
+    """
+    if not captures.exists():
+        return False
+    expected = {
+        f"layer_{l:02d}/view_{v:02d}.exr"
+        for l in range(n_layers)
+        for v in range(n_views)
+    }
+    for p in captures.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(captures).as_posix()
+        if rel not in expected:
+            return True
+    return False
+
+
 class DEPTHPEELXR_OT_capture(Operator):
     bl_idname = "depthpeelxr.capture"
     bl_label = "Run Capture"
@@ -152,6 +177,17 @@ class DEPTHPEELXR_OT_capture(Operator):
         if captures is None:
             self.report({"ERROR"}, "Project root unresolved (save the .blend first)")
             return {"CANCELLED"}
+
+        # Wipe captures only when the existing layout doesn't match what
+        # this run will write — protects Phase 4 from picking up stale
+        # files left by a previous run with different grid_n / layer_count.
+        if _captures_have_layout_orphans(captures, len(lp.layers), len(cams)):
+            try:
+                shutil.rmtree(captures)
+            except OSError as exc:
+                self.report({"ERROR"}, f"Failed to wipe stale captures: {exc}")
+                return {"CANCELLED"}
+            self.report({"INFO"}, "Wiped stale captures from a previous run with a different layout")
 
         # Build iteration plan: (layer_idx, view_idx, layer_near, layer_far, cam).
         self._plan = []
