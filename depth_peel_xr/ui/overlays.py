@@ -26,6 +26,8 @@ def _draw():
     portal = props.portal_object
     if portal is None or portal.name not in bpy.data.objects:
         return
+    if not portal.visible_get():
+        return
 
     n = max(1, props.grid_n)
     w = props.portal_width
