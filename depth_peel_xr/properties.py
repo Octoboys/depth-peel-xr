@@ -175,7 +175,22 @@ class LayerPlacementProps(PropertyGroup):
     )
 
 
-CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps)
+_CAPTURE_ENGINE_ITEMS = (
+    ("BLENDER_EEVEE", "EEVEE", "Fast raster engine — best for iteration"),
+    ("CYCLES", "Cycles", "Physically-based path tracer — best for final output"),
+)
+
+
+class CaptureProps(PropertyGroup):
+    engine: EnumProperty(
+        name="Engine",
+        description="Render engine for the per-layer multi-view capture",
+        items=_CAPTURE_ENGINE_ITEMS,
+        default="BLENDER_EEVEE",
+    )
+
+
+CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps, CaptureProps)
 
 
 def register():
@@ -184,9 +199,11 @@ def register():
     bpy.types.Scene.dpx_portal_rig = PointerProperty(type=PortalRigProps)
     bpy.types.Scene.dpx_paths = PointerProperty(type=PathsProps)
     bpy.types.Scene.dpx_layer_placement = PointerProperty(type=LayerPlacementProps)
+    bpy.types.Scene.dpx_capture = PointerProperty(type=CaptureProps)
 
 
 def unregister():
+    del bpy.types.Scene.dpx_capture
     del bpy.types.Scene.dpx_layer_placement
     del bpy.types.Scene.dpx_paths
     del bpy.types.Scene.dpx_portal_rig

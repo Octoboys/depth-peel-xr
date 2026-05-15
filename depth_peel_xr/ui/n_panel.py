@@ -108,6 +108,27 @@ class DEPTHPEELXR_PT_main(Panel):
                 "depthpeelxr.cleanup_layers", text="Clean Up Layers", icon="TRASH"
             )
 
+            capture = scene.dpx_capture
+            capture_box = layout.box()
+            capture_box.label(text="Capture", icon="RENDER_STILL")
+            col = capture_box.column(align=True)
+            col.prop(capture, "engine")
+            n_views = len(get_view_cameras_sorted())
+            n_layers = len(lp.layers)
+            total = n_views * n_layers
+            if total:
+                col.label(text=f"{n_layers} × {n_views} = {total} renders queued")
+            else:
+                col.label(text="Place layers to enable capture")
+            col.separator(factor=1.5)
+            col.operator("depthpeelxr.capture", icon="RENDER_STILL")
+            col.separator()
+            col.operator(
+                "depthpeelxr.cleanup_captures",
+                text="Clean Up Captures",
+                icon="TRASH",
+            )
+
         project_box = layout.box()
         project_box.label(text="Project", icon="FILE_FOLDER")
         unsaved = not paths.is_blend_saved() and not path_props.project_root

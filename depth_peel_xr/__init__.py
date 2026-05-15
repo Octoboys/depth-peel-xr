@@ -2,6 +2,7 @@ from . import properties
 from .operators import portal_rig as op_portal_rig
 from .operators import inspect as op_inspect
 from .operators import layer_placement as op_layer_placement
+from .operators import capture as op_capture
 from .ui import n_panel
 from .ui import overlays
 
@@ -11,6 +12,7 @@ _MODULES = (
     op_portal_rig,
     op_inspect,
     op_layer_placement,
+    op_capture,
     n_panel,
     overlays,
 )
