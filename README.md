@@ -24,7 +24,7 @@ This repo is in early bootstrap. Implementation is broken into phases with expli
 |---|---|---|
 | 0 | Dev environment bootstrap | complete |
 | 1 | Portal Rig + Infrastructure | complete |
-| 2 | Layer Placement | in progress (fixed-distribution shipped; depth probe + histogram_hybrid pending) |
+| 2 | Layer Placement | complete |
 | 3 | Multi-view Capture | pending |
 | 4 | Reconstruction + Preview | pending |
 | 5 | Occlusion Culling | pending |
@@ -112,7 +112,7 @@ Addon-package sub-tree and module responsibilities are documented in the impleme
 
 ## Reference material
 
-- [`docs/reference/hybrid_depth_layers.py`](docs/reference/hybrid_depth_layers.py) — original hybrid importance + uniform NDC sampling with empty-layer removal. Being ported into `depth_peel_xr/core/layer_placement/histogram_hybrid.py`.
+- [`docs/reference/hybrid_depth_layers.py`](docs/reference/hybrid_depth_layers.py) — original hybrid importance + uniform NDC sampling with empty-layer removal. Shipped at `depth_peel_xr/core/layer_placement/histogram_hybrid.py` with intentional divergence on the empty-layer collapse semantics (the reference fused every contiguous non-empty pair into one layer; the port keeps them separate).
 - [`docs/reference/importance_depth_layers.py`](docs/reference/importance_depth_layers.py) — pure importance-sampling variant; CDF-logic reference.
 
 The reusable pieces — NDC transform, histogram → CDF inverse sampling, empty-layer detection, and gap-closing — port directly; only the depth-loading front-end changes (Blender render result → numpy, instead of OIIO EXR read).

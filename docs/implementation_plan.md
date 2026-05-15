@@ -212,37 +212,41 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 **Goal**: produce a list of `(near, far)` layer boundaries from a single-camera depth probe.
 
 **Scope**:
-- `core/depth.py` — NDC transform and pooled-depth utilities (adapted from existing scripts to take numpy arrays directly).
+- `core/depth.py` — NDC perspective transform (`ndc_perspective` / `inverse_ndc_perspective`) and `pool_valid_depths`.
 - `core/layer_placement/base.py` — `LayerPlacementStrategy` ABC.
 - `core/layer_placement/fixed_distribution.py` — user-count + uniform-Z / 1-over-Z / log.
-- `core/layer_placement/histogram_hybrid.py` — port of `hybrid_depth_layers.py` logic.
+- `core/layer_placement/histogram_hybrid.py` — histogram-driven CDF importance sampling + uniform-NDC half. Differs from `docs/reference/hybrid_depth_layers.py` in two intentional ways:
+  - The reference's empty-layer-collapse loop fused every contiguous non-empty pair into one layer, so any depth distribution without explicit empty bands collapsed to a single layer. Our port keeps non-empty layers separate; only empty-induced gaps trigger gap-close.
+  - Importance-half endpoints are snapped to `ndc_min` / `ndc_max` so dedupe with the uniform-half endpoints fires cleanly (no near-zero-thickness tail layers from float32 imprint).
+  - Uniform-half count is bumped by 1 to compensate for endpoint dedupe (otherwise the result has `n_layers - 1` layers).
+  - Near-duplicate interior boundaries (within `1/(4·n_layers)` of each other in NDC) are merged.
 - Rig depth-scope properties on `PortalRigProps`:
   - `min_depth` (metres past the portal; default 0). Pushes the first layer's near boundary into the scene to skip empty near-portal volume.
   - `max_depth` (metres past the portal; default 20). Defines the deepest plane.
   - Layer placement subdivides `[headplane_offset + min_depth, headplane_offset + max_depth]`.
 - `DEPTHPEELXR_OT_place_layers` operator:
-  - Configures centre camera FoV to super-frustum through portal.
-  - Renders Z pass only at viewing resolution (fast).
-  - When `min_depth > 0`, sets the probe camera's `clip_start = headplane_offset + min_depth`, `clip_end = headplane_offset + max_depth` for the duration of the render — keeps the histogram free of empty-near-portal pixels and gives the depth buffer its full precision across the placement scope. Save/restore around the render.
-  - Runs selected strategy, stores `layers` list on scene props.
-  - Live recompute: changing `min_depth`, `max_depth`, `distribution`, or `layer_count` re-runs the strategy automatically when FIXED is selected and layers are already populated (cheap pure math).
-  - Updates viewport overlay to show **all `N+1` unique layer boundaries** as partially-transparent rectangles, each scaled to match the centre camera's super-frustum projected to that depth (so each plane frames what the cameras see at its depth). One plane per layer's near edge plus a final plane at the last layer's far edge. The deepest plane (rig depth scope) is **pink**; all interior planes are **green**.
-- `DEPTHPEELXR_OT_cleanup_layers`: clears layer list and overlay; reverts camera-config changes.
-- N-panel section `Layer Placement`: strategy dropdown, per-strategy params (layer count, distribution), `min_depth` / `max_depth` sliders, `Analyse & Place`, cleanup button.
+  - For HYBRID: spawns a temp centre-camera (symmetric super-frustum FoV at head-plane centre), with `clip_start = ho + min_depth` and `clip_end = ho + max_depth`. Renders an EEVEE Z-pass at 256 px (no AA). Compositor uses a temp `Render Layers → Viewer` graph; depth is read directly from `bpy.data.images['Viewer Node']` via `pixels.foreach_get` — no disk I/O. All scene state (engine, resolution, view-layer pass enable, compositor node group, scene camera) saved before the render and restored via `try/finally` on every exit path.
+  - HYBRID refuses to place layers if the probe is essentially empty (< 100 valid samples in scope) or essentially flat (depth spread < 1% of scope) — depth-peeling adds no value in either case.
+  - Layers are cleared up front on every attempt; failures leave the overlay clean rather than showing a stale preview.
+  - Live recompute: changing any of `min_depth`, `max_depth`, `distribution`, `layer_count`, or `strategy` re-runs the strategy. FIXED runs synchronously; HYBRID is debounced ~150 ms via `bpy.app.timers` so slider drags trigger one render on release. Auto-recompute is gated on a hidden `auto_recompute` flag (set by `Analyse & Place`, cleared by `Clean Up Layers`) — independent of layer count, so transient failures don't break live updates.
+  - Updates viewport overlay to show **all `N+1` unique layer boundaries** as partially-transparent rectangles, each scaled to match the centre camera's super-frustum projected to that depth. The deepest plane (rig depth scope) is **pink**; all interior planes are **green**. Each plane has a near-black 1.5 px wireframe outline for visibility.
+- `DEPTHPEELXR_OT_cleanup_layers`: clears layer list and overlay, clears `auto_recompute` flag.
+- `DEPTHPEELXR_OT_auto_fit_depth_scope`: renders a wide-open probe (clip 0.001–1000 m), filters out background sentinels, and snaps `min_depth` / `max_depth` to the actual scene-content extents past the portal. On empty scene, errors out and clears any previous layers.
+- N-panel section `Layer Placement`: strategy dropdown, per-strategy params (layer count, spread), `min_depth` / `max_depth` sliders, `Auto-fit to Scene`, `Analyse & Place`, cleanup button.
 
-**Status**: shipped in slices.
+**Status**: complete.
 
-- **Slice 1 (shipped)** — fixed-distribution end-to-end. `core/layer_placement/{base,fixed_distribution}.py`, scene props (`min_depth`, `max_depth`, strategy/distribution/layer_count, layer collection), place/cleanup operators, N+1 boundary-plane overlay, N-panel UI, live recompute on param change. No depth probe — fixed_distribution is analytic. HYBRID enum value exposed in the dropdown but greyed out. 14 pytest cases for the three distributions.
-- **Slice 2 (pending)** — `core/depth.py` (Z-pass NDC + pooling), `histogram_hybrid` strategy port, depth-probe render in the operator with clip-range matching, parity tests against `docs/reference/hybrid_depth_layers.py`.
+- **Slice 1 (shipped)** — fixed-distribution end-to-end. `core/layer_placement/{base,fixed_distribution}.py`, scene props, place/cleanup operators, N+1 boundary-plane overlay, N-panel UI, live recompute on param change. 14 pytest cases for the three distributions.
+- **Slice 2 (shipped)** — `core/depth.py`, `core/layer_placement/histogram_hybrid.py`, probe operator (EEVEE Z-pass via Viewer Node), debounced HYBRID recompute, auto-fit operator, plus the empty/flat-probe safety thresholds and clear-on-failure model. Diagnostic tooling in `tools/debug_probe.py` and `tools/introspect_compositor_api.py` for headless API spelunking.
 
 **Acceptance**:
-- Single centre-camera depth probe is sufficient (verified on a synthetic scene — no need for multi-view at this stage).
-- Running `Analyse & Place` on a test scene matches the standalone `hybrid_depth_layers.py` output (same depth input → same boundaries), verified by unit test.
-- All `N+1` boundary planes appear, sized to the super-frustum at their depth, with the last layer's far plane drawn pink and the rest green.
-- Changing strategy or params changes the result.
-- Cleanup removes the overlay and any camera mods.
+- HYBRID on a non-trivial scene produces visibly distinct layer boundaries reflecting the depth distribution; `Auto-fit to Scene` snaps `min_depth` / `max_depth` to the actual content extents.
+- Empty / flat / nearly-flat scenes produce zero layers with a clear error report; previous layers are cleared rather than left as a stale preview.
+- All `N+1` boundary planes appear, sized to the super-frustum at their depth, deepest pink and the rest green, with dark wireframe outlines.
+- Changing strategy or params changes the result; HYBRID slider drags fire at most one render on release.
+- Pytest covers `core/depth` round-trip + invalid inputs and `HistogramHybrid` shape, contiguity, dense/bimodal distributions, edge cases, and the gap-close semantics.
 
-**Verification**: numpy unit tests against existing script outputs; manual visual check of far-edge plane in a test scene.
+**Verification**: numpy unit tests; manual visual check of overlay against scene geometry.
 
 ---
 

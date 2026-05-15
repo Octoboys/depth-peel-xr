@@ -59,7 +59,7 @@ inner.<item-C>(...)
 
 User-authored Python scripts implementing the layer-placement algorithms being ported into the add-on:
 
-- `docs/reference/hybrid_depth_layers.py` — hybrid importance + uniform NDC sampling with empty-layer removal. Being ported into `depth_peel_xr/core/layer_placement/histogram_hybrid.py`.
+- `docs/reference/hybrid_depth_layers.py` — hybrid importance + uniform NDC sampling with empty-layer removal. Shipped at `depth_peel_xr/core/layer_placement/histogram_hybrid.py` with intentional divergence: the reference's empty-layer-collapse fused every contiguous non-empty pair (collapsing dense distributions to one layer); the port keeps non-empty layers separate and only closes empty-induced gaps.
 - `docs/reference/importance_depth_layers.py` — pure importance-sampling variant; reference for the CDF logic, not ported directly.
 
 Reusable pieces: NDC transform, histogram → CDF inverse sampling, empty-layer detection and gap-closing. Port preserves the proven maths; input changes from EXR paths to numpy arrays from Blender render results.

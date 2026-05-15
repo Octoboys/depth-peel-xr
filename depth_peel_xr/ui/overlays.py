@@ -17,7 +17,9 @@ _HANDLE = None
 _RECT_COLOR = (0.4, 0.8, 1.0, 1.0)
 _GRID_COLOR = (1.0, 0.85, 0.2, 1.0)
 _BOUNDARY_INTERIOR_COLOR = (0.3, 1.0, 0.4, 0.18)
+_BOUNDARY_INTERIOR_EDGE_COLOR = (0.04, 0.18, 0.06, 1.0)
 _BOUNDARY_DEEPEST_COLOR = (1.0, 0.4, 0.7, 0.22)
+_BOUNDARY_DEEPEST_EDGE_COLOR = (0.22, 0.05, 0.12, 1.0)
 
 
 def _super_frustum_half_extents(d: float, half_w_p: float, half_h_p: float, ho: float):
@@ -98,16 +100,24 @@ def _draw():
     if boundary_depths:
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("LESS_EQUAL")
+        gpu.state.line_width_set(1.5)
         for i, d in enumerate(boundary_depths):
             quad = _boundary_quad_corners(M, d, half_w, half_h, ho)
             tris = [quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]]
-            color = (
-                _BOUNDARY_DEEPEST_COLOR
-                if i == len(boundary_depths) - 1
-                else _BOUNDARY_INTERIOR_COLOR
-            )
-            shader.uniform_float("color", color)
+            edges = [
+                quad[0], quad[1],
+                quad[1], quad[2],
+                quad[2], quad[3],
+                quad[3], quad[0],
+            ]
+            is_deepest = i == len(boundary_depths) - 1
+            fill = _BOUNDARY_DEEPEST_COLOR if is_deepest else _BOUNDARY_INTERIOR_COLOR
+            edge = _BOUNDARY_DEEPEST_EDGE_COLOR if is_deepest else _BOUNDARY_INTERIOR_EDGE_COLOR
+            shader.uniform_float("color", fill)
             batch_for_shader(shader, "TRIS", {"pos": tris}).draw(shader)
+            shader.uniform_float("color", edge)
+            batch_for_shader(shader, "LINES", {"pos": edges}).draw(shader)
+        gpu.state.line_width_set(1.0)
         gpu.state.blend_set("NONE")
         gpu.state.depth_test_set("NONE")
 

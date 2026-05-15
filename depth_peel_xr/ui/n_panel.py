@@ -93,13 +93,16 @@ class DEPTHPEELXR_PT_main(Panel):
             col.prop(lp, "layer_count")
             col.prop(props, "min_depth")
             col.prop(props, "max_depth")
+            col.operator(
+                "depthpeelxr.auto_fit_depth_scope",
+                text="Auto-fit to Scene",
+                icon="FULLSCREEN_ENTER",
+            )
             col.separator(factor=1.5)
             count = len(lp.layers)
             status = f"{count} layer{'s' if count != 1 else ''} placed" if count else "No layers placed"
             col.label(text=status)
-            place_row = col.row(align=True)
-            place_row.enabled = lp.strategy == "FIXED"
-            place_row.operator("depthpeelxr.place_layers", icon="PLAY")
+            col.operator("depthpeelxr.place_layers", icon="PLAY")
             col.separator()
             col.operator(
                 "depthpeelxr.cleanup_layers", text="Clean Up Layers", icon="TRASH"

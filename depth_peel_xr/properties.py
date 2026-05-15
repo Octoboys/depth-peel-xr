@@ -1,5 +1,6 @@
 import bpy
 from bpy.props import (
+    BoolProperty,
     CollectionProperty,
     EnumProperty,
     FloatProperty,
@@ -127,7 +128,7 @@ class LayerEntry(PropertyGroup):
 def _strategy_items(self, context):
     return (
         ("FIXED", "Fixed Distribution", "Analytic spacing — uniform-Z, 1/Z, or log"),
-        ("HYBRID", "Histogram Hybrid (coming soon)", "Importance + uniform — not yet implemented"),
+        ("HYBRID", "Histogram Hybrid", "Importance + uniform NDC sampling from a centre-camera depth probe"),
     )
 
 
@@ -147,7 +148,7 @@ class LayerPlacementProps(PropertyGroup):
         update=_on_layer_param_change,
     )
     distribution: EnumProperty(
-        name="Distribution",
+        name="Spread",
         description="Spacing curve for fixed-distribution placement",
         items=_DISTRIBUTION_ITEMS,
         default="LOG",
@@ -158,10 +159,19 @@ class LayerPlacementProps(PropertyGroup):
         description="Number of depth layers to place",
         default=4,
         min=1,
-        soft_max=16,
+        soft_max=128,
         update=_on_layer_param_change,
     )
     layers: CollectionProperty(type=LayerEntry)
+    auto_recompute: BoolProperty(
+        name="Auto-recompute",
+        description=(
+            "Internal flag — True once the user has requested placement, "
+            "until they hit Clean Up Layers. Drives whether param changes "
+            "auto-trigger recomputes."
+        ),
+        default=False,
+    )
 
 
 CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps)
