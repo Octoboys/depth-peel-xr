@@ -6,11 +6,12 @@ full [near, far] camera-space range, given a user-chosen layer count.
 
 from .base import LayerPlacementStrategy
 from .fixed_distribution import Distribution, FixedDistribution
-from .histogram_hybrid import HistogramHybrid
+from .histogram_hybrid import HistogramHybrid, HistogramImportance
 
 __all__ = [
     "LayerPlacementStrategy",
     "FixedDistribution",
     "Distribution",
     "HistogramHybrid",
+    "HistogramImportance",
 ]

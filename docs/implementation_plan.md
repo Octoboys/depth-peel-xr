@@ -215,11 +215,13 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 - `core/depth.py` — NDC perspective transform (`ndc_perspective` / `inverse_ndc_perspective`) and `pool_valid_depths`.
 - `core/layer_placement/base.py` — `LayerPlacementStrategy` ABC.
 - `core/layer_placement/fixed_distribution.py` — user-count + uniform-Z / 1-over-Z / log.
-- `core/layer_placement/histogram_hybrid.py` — histogram-driven CDF importance sampling + uniform-NDC half. Differs from `docs/reference/hybrid_depth_layers.py` in two intentional ways:
-  - The reference's empty-layer-collapse loop fused every contiguous non-empty pair into one layer, so any depth distribution without explicit empty bands collapsed to a single layer. Our port keeps non-empty layers separate; only empty-induced gaps trigger gap-close.
-  - Importance-half endpoints are snapped to `ndc_min` / `ndc_max` so dedupe with the uniform-half endpoints fires cleanly (no near-zero-thickness tail layers from float32 imprint).
-  - Uniform-half count is bumped by 1 to compensate for endpoint dedupe (otherwise the result has `n_layers - 1` layers).
-  - Near-duplicate interior boundaries (within `1/(4·n_layers)` of each other in NDC) are merged.
+- `core/layer_placement/histogram_hybrid.py` — two histogram-driven strategies sharing pipeline (NDC sampling, CDF, empty-collapse, contiguity pin):
+  - `HistogramHybrid` — N/2+1 importance + N/2+1 uniform NDC boundaries merged. Uniform half guarantees baseline coverage. Differs from `docs/reference/hybrid_depth_layers.py` in two intentional ways:
+    - The reference's empty-layer-collapse loop fused every contiguous non-empty pair into one layer, so any depth distribution without explicit empty bands collapsed to a single layer. Our port keeps non-empty layers separate; only empty-induced gaps trigger gap-close.
+    - Importance-half endpoints are snapped to `ndc_min` / `ndc_max` so dedupe with the uniform-half endpoints fires cleanly (no near-zero-thickness tail layers from float32 imprint).
+    - Uniform-half count is bumped by 1 to compensate for endpoint dedupe (otherwise the result has `n_layers - 1` layers).
+    - Near-duplicate interior boundaries (within `1/(4·n_layers)` of each other in NDC) are merged.
+  - `HistogramImportance` — N+1 boundaries from CDF inverse only. Equal-population layers; no uniform safety net. Skips the close-boundary dedupe (intentional clustering in dense NDC regions is the whole point).
 - Rig depth-scope properties on `PortalRigProps`:
   - `min_depth` (metres past the portal; default 0). Pushes the first layer's near boundary into the scene to skip empty near-portal volume.
   - `max_depth` (metres past the portal; default 20). Defines the deepest plane.

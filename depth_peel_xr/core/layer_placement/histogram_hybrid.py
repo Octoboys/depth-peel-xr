@@ -1,17 +1,13 @@
-"""Histogram-driven hybrid layer placement.
+"""Histogram-driven layer placement.
 
-Port of `docs/reference/hybrid_depth_layers.py` to take a numpy depth
-array directly (instead of EXR paths). Algorithm unchanged:
+Two strategies share most of the pipeline (NDC sampling, histogram +
+CDF, near-duplicate dedupe, empty-layer collapse, contiguity pin) and
+differ only in how they generate boundaries from the CDF:
 
-    1. Pool valid depths → NDC.
-    2. Importance half: histogram → CDF inverse-sampled at uniform t.
-    3. Uniform half: even spacing in NDC.
-    4. Merge + dedupe in NDC, convert back to depth.
-    5. Empty-layer removal: drop layers with no samples; close the gaps.
-    6. Pin to global extents [near, far].
-
-The cube-face pooling logic from the reference is unnecessary here —
-slice 2's depth probe is a single centre-camera render.
+  - HistogramHybrid    : N/2 + 1 importance + (N/2 + 1) uniform NDC,
+                         merged. Robust baseline coverage.
+  - HistogramImportance: N + 1 importance only. All layers track
+                         content density; equal-population layers.
 """
 
 from __future__ import annotations
@@ -32,7 +28,15 @@ _HISTOGRAM_BINS = 10000
 _CONTIGUITY_TOL = 1e-6
 
 
-class HistogramHybrid(LayerPlacementStrategy):
+class _HistogramStrategyBase(LayerPlacementStrategy):
+    """Shared scaffolding: validation, NDC sampling, post-process."""
+
+    # HYBRID merges importance + uniform halves and needs to drop
+    # near-duplicates that survive `set()` dedupe. IMPORTANCE intentionally
+    # clusters boundaries in dense NDC regions (the whole point of CDF
+    # inverse) — deduping those defeats the purpose.
+    _apply_close_dedupe = True
+
     def __init__(self, histogram_bins: int = _HISTOGRAM_BINS):
         self.histogram_bins = histogram_bins
 
@@ -44,7 +48,7 @@ class HistogramHybrid(LayerPlacementStrategy):
         depth: Optional[np.ndarray] = None,
     ) -> list[Layer]:
         if depth is None:
-            raise ValueError("HistogramHybrid requires a depth array")
+            raise ValueError(f"{type(self).__name__} requires a depth array")
         if n_layers < 1:
             raise ValueError(f"n_layers must be >= 1, got {n_layers}")
 
@@ -65,33 +69,43 @@ class HistogramHybrid(LayerPlacementStrategy):
             max(ndc_near, ndc_far),
         )
 
-        importance_boundaries = self._importance_boundaries(
-            ndc_samples, ndc_min, ndc_max, n_layers // 2
+        boundaries_ndc = self._compute_ndc_boundaries(
+            ndc_samples, ndc_min, ndc_max, n_layers
         )
-        # `+1` compensates for the two endpoints shared between importance
-        # and uniform halves: without it, dedupe would knock the merged
-        # boundary count down to n_layers, yielding n_layers-1 layers.
-        uniform_boundaries = np.linspace(
-            ndc_min, ndc_max, (n_layers - n_layers // 2) + 2
-        ).tolist()
+        boundaries_ndc = sorted(set(boundaries_ndc))
+        if self._apply_close_dedupe:
+            boundaries_ndc = _drop_close_boundaries(
+                boundaries_ndc, ndc_min, ndc_max, n_layers
+            )
+        boundaries_depth = sorted(
+            float(inverse_ndc_perspective(n, near, far)) for n in boundaries_ndc
+        )
+        return _collapse_empty_layers(boundaries_depth, valid)
 
-        merged_ndc = sorted(set(importance_boundaries + uniform_boundaries))
-        merged_ndc = _drop_close_boundaries(merged_ndc, ndc_min, ndc_max, n_layers)
-        merged_depth = [
-            float(inverse_ndc_perspective(n, near, far)) for n in merged_ndc
-        ]
-        merged_depth.sort()
-
-        return _collapse_empty_layers(merged_depth, valid)
+    def _compute_ndc_boundaries(
+        self,
+        ndc_samples: np.ndarray,
+        ndc_min: float,
+        ndc_max: float,
+        n_layers: int,
+    ) -> list[float]:
+        raise NotImplementedError
 
     def _importance_boundaries(
         self,
         ndc_samples: np.ndarray,
         ndc_min: float,
         ndc_max: float,
-        num_importance: int,
+        n_segments: int,
     ) -> list[float]:
-        if num_importance <= 0:
+        """Sample `n_segments + 1` NDC boundaries via CDF inverse:
+        equal-population partitions of the sample distribution.
+
+        Endpoints snapped to the exact ndc_min/ndc_max so that downstream
+        dedupe with uniform-grid boundaries matches cleanly (otherwise
+        floats from `edges[idx]` differ by ULPs and survive `set()`).
+        """
+        if n_segments <= 0:
             return [ndc_min, ndc_max]
         hist, edges = np.histogram(
             ndc_samples, bins=self.histogram_bins, range=(ndc_min, ndc_max)
@@ -101,18 +115,62 @@ class HistogramHybrid(LayerPlacementStrategy):
             return [ndc_min, ndc_max]
         cdf = np.cumsum(hist).astype(np.float64) / total
         out = []
-        for i in range(num_importance + 1):
-            t = i / num_importance
+        for i in range(n_segments + 1):
+            t = i / n_segments
             idx = min(int(np.searchsorted(cdf, t)), len(edges) - 1)
             out.append(float(edges[idx]))
-        # Snap endpoints to the exact NDC extents so they coincide with
-        # the uniform-half endpoints under dedupe. Without this, t=0 lands
-        # at the first occupied histogram bin (≈ ndc_min) and t=1 at the
-        # last (≈ ndc_max but not equal), producing a near-zero-thickness
-        # tail layer after merge.
         out[0] = ndc_min
         out[-1] = ndc_max
         return out
+
+
+class HistogramHybrid(_HistogramStrategyBase):
+    """Importance-half + uniform-half boundaries merged in NDC.
+
+    The uniform half guarantees baseline coverage even where the depth
+    distribution is sparse — useful for mixed foreground / background
+    scenes.
+    """
+
+    def _compute_ndc_boundaries(
+        self,
+        ndc_samples: np.ndarray,
+        ndc_min: float,
+        ndc_max: float,
+        n_layers: int,
+    ) -> list[float]:
+        importance = self._importance_boundaries(
+            ndc_samples, ndc_min, ndc_max, n_layers // 2
+        )
+        # `+1` compensates for the two endpoints shared between
+        # importance and uniform halves: without it, dedupe would knock
+        # the merged boundary count down to n_layers, yielding only
+        # n_layers-1 layers.
+        uniform = np.linspace(
+            ndc_min, ndc_max, (n_layers - n_layers // 2) + 2
+        ).tolist()
+        return importance + uniform
+
+
+class HistogramImportance(_HistogramStrategyBase):
+    """Pure CDF inverse-sampled boundaries. All `n_layers + 1` boundaries
+    come from the importance half — equal-population layers, no uniform
+    safety net. Best when foreground content density should soak up the
+    full layer budget.
+    """
+
+    _apply_close_dedupe = False
+
+    def _compute_ndc_boundaries(
+        self,
+        ndc_samples: np.ndarray,
+        ndc_min: float,
+        ndc_max: float,
+        n_layers: int,
+    ) -> list[float]:
+        return self._importance_boundaries(
+            ndc_samples, ndc_min, ndc_max, n_layers
+        )
 
 
 def _drop_close_boundaries(
@@ -165,7 +223,7 @@ def _collapse_empty_layers(
 
     if not any(c > 0 for c in counts):
         raise ValueError(
-            "All hybrid layers came back empty — depth scope contains no geometry"
+            "All layers came back empty — depth scope contains no geometry"
         )
 
     # Walk left-to-right keeping non-empty layers verbatim. When the

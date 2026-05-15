@@ -14,7 +14,12 @@ import numpy as np
 from bpy.types import Operator
 from mathutils import Matrix, Vector
 
-from ..core.layer_placement import Distribution, FixedDistribution, HistogramHybrid
+from ..core.layer_placement import (
+    Distribution,
+    FixedDistribution,
+    HistogramHybrid,
+    HistogramImportance,
+)
 from .portal_rig import camera_local_rotation_4x4
 
 
@@ -237,7 +242,7 @@ def compute_and_store_layers(context) -> tuple[bool, str]:
         _populate_layers(lp, layers)
         return True, f"Placed {len(layers)} layers in [{near:.2f}, {far:.2f}] m"
 
-    if lp.strategy == "HYBRID":
+    if lp.strategy in ("HYBRID", "IMPORTANCE"):
         try:
             depth = _render_depth_probe(context)
         except RuntimeError as exc:
@@ -261,8 +266,11 @@ def compute_and_store_layers(context) -> tuple[bool, str]:
                 "adds no value — use a single plane instead, or widen scope."
             )
 
+        strategy = (
+            HistogramHybrid() if lp.strategy == "HYBRID" else HistogramImportance()
+        )
         try:
-            layers = HistogramHybrid().place(near, far, int(lp.layer_count), depth=depth)
+            layers = strategy.place(near, far, int(lp.layer_count), depth=depth)
         except ValueError as exc:
             return False, str(exc)
         _populate_layers(lp, layers)
@@ -290,7 +298,7 @@ def repopulate_layers_if_active(context) -> None:
         tag_view3d_redraw()
         return
 
-    if lp.strategy == "HYBRID":
+    if lp.strategy in ("HYBRID", "IMPORTANCE"):
         _schedule_hybrid_recompute()
 
 
@@ -309,7 +317,7 @@ def _schedule_hybrid_recompute() -> None:
         if getattr(ctx, "scene", None) is None:
             return None
         lp = getattr(ctx.scene, "dpx_layer_placement", None)
-        if lp is None or not lp.auto_recompute or lp.strategy != "HYBRID":
+        if lp is None or not lp.auto_recompute or lp.strategy not in ("HYBRID", "IMPORTANCE"):
             return None
         compute_and_store_layers(ctx)
         tag_view3d_redraw()

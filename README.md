@@ -108,11 +108,11 @@ Addon-package sub-tree and module responsibilities are documented in the impleme
 - **`depth_peel_xr/core/` never imports `bpy`.** All pure-math modules (depth pooling, CDF sampling, quadtree building, multi-view reprojection, occlusion culling, USD authoring) are testable in plain Python via `pytest`.
 - **Every Blender-mutating operator has a matching cleanup operator**, and a master `Clean up all` runs them in sequence. Running the pipeline leaves no orphan datablocks on reset.
 - **USD written directly via `pxr.Usd`** (not Blender's built-in exporter), for precise control over prim hierarchy, geom subsets, and material binding. `pxr` is not bundled with Blender — the add-on detects it and surfaces an install prompt if missing.
-- **Layer placement is a pluggable strategy.** V1 ships two strategies (user-count + fixed distribution; histogram-driven hybrid CDF + uniform); the `LayerPlacementStrategy` ABC leaves room for budget-driven optimisation and manual gizmos without touching the operator layer.
+- **Layer placement is a pluggable strategy.** V1 ships three strategies (analytic fixed distribution; histogram-driven hybrid CDF + uniform; pure histogram importance); the `LayerPlacementStrategy` ABC leaves room for budget-driven optimisation and manual gizmos without touching the operator layer.
 
 ## Reference material
 
 - [`docs/reference/hybrid_depth_layers.py`](docs/reference/hybrid_depth_layers.py) — original hybrid importance + uniform NDC sampling with empty-layer removal. Shipped at `depth_peel_xr/core/layer_placement/histogram_hybrid.py` with intentional divergence on the empty-layer collapse semantics (the reference fused every contiguous non-empty pair into one layer; the port keeps them separate).
-- [`docs/reference/importance_depth_layers.py`](docs/reference/importance_depth_layers.py) — pure importance-sampling variant; CDF-logic reference.
+- [`docs/reference/importance_depth_layers.py`](docs/reference/importance_depth_layers.py) — pure importance-sampling variant; reflected in `HistogramImportance` (the equal-population sibling of `HistogramHybrid`).
 
 The reusable pieces — NDC transform, histogram → CDF inverse sampling, empty-layer detection, and gap-closing — port directly; only the depth-loading front-end changes (Blender render result → numpy, instead of OIIO EXR read).
