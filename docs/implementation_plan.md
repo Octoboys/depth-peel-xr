@@ -220,14 +220,14 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
   - Configures centre camera FoV to super-frustum through portal.
   - Renders Z pass only at viewing resolution (fast).
   - Runs selected strategy, stores `layers` list on scene props.
-  - Updates viewport overlay to show the **far edge of the last layer only** (single plane).
+  - Updates viewport overlay to show **all `N+1` unique layer boundaries** as partially-transparent rectangles, each scaled to match the centre camera's super-frustum projected to that depth (so each plane frames what the cameras see at its depth). One plane per layer's near edge plus a final plane at the last layer's far edge. The deepest plane (rig depth scope) is **pink**; all interior planes are **green**.
 - `DEPTHPEELXR_OT_cleanup_layers`: clears layer list and overlay; reverts camera-config changes.
 - N-panel section `Layer Placement`: strategy dropdown, per-strategy params (layer count, distribution), `Analyse & Place`, cleanup button.
 
 **Acceptance**:
 - Single centre-camera depth probe is sufficient (verified on a synthetic scene — no need for multi-view at this stage).
 - Running `Analyse & Place` on a test scene matches the standalone `hybrid_depth_layers.py` output (same depth input → same boundaries), verified by unit test.
-- Far-edge-of-last-layer plane appears and updates correctly.
+- All `N+1` boundary planes appear, sized to the super-frustum at their depth, with the last layer's far plane drawn pink and the rest green.
 - Changing strategy or params changes the result.
 - Cleanup removes the overlay and any camera mods.
 
