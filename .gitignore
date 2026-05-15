@@ -48,6 +48,9 @@ ENV/
 /*.usdc
 /*.usdz
 
+# Local test scenes
+blends/
+
 # Editor temp files
 *.swp
 *.bak

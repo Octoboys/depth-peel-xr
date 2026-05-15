@@ -23,7 +23,7 @@ This repo is in early bootstrap. Implementation is broken into phases with expli
 | Phase | Subject | Status |
 |---|---|---|
 | 0 | Dev environment bootstrap | complete |
-| 1 | Portal Rig + Infrastructure | pending |
+| 1 | Portal Rig + Infrastructure | complete |
 | 2 | Layer Placement | pending |
 | 3 | Multi-view Capture | pending |
 | 4 | Reconstruction + Preview | pending |
