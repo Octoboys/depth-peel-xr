@@ -128,8 +128,8 @@ class LayerEntry(PropertyGroup):
 def _strategy_items(self, context):
     return (
         ("FIXED", "Fixed Distribution", "Analytic spacing — uniform-Z, 1/Z, or log"),
-        ("HYBRID", "Histogram Hybrid", "Importance + uniform NDC sampling from a centre-camera depth probe"),
         ("IMPORTANCE", "Histogram Importance", "Pure CDF inverse sampling — equal-population layers, no uniform safety net"),
+        ("HYBRID", "Histogram Hybrid", "Importance + uniform NDC sampling from a centre-camera depth probe"),
     )
 
 

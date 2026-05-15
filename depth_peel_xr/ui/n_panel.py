@@ -90,7 +90,7 @@ class DEPTHPEELXR_PT_main(Panel):
             row.enabled = lp.strategy == "FIXED"
             row.prop(lp, "distribution")
             col.separator()
-            col.prop(lp, "layer_count")
+            col.prop(lp, "layer_count", text="Layers (target)" if lp.strategy == "HYBRID" else "Layers")
             col.prop(props, "min_depth")
             col.prop(props, "max_depth")
             col.operator(
