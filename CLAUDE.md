@@ -32,6 +32,29 @@ Implications:
 
 **Project-scoped output folders** — all generated files (captures, temp, USD) live under `<blend_dir>/depth_peel_xr/<scene_name>/`, not scattered across the user's filesystem.
 
+## N-panel UI conventions
+
+The `Depth Peel XR` N-panel uses a single, consistent layout pattern. Stick to it when adding new sections — the user has dialed it in deliberately and corrections cost a turn each.
+
+**One aligned column per section.** After each section's `box.label(...)` header, open `col = box.column(align=True)` and stack everything (params, status labels, action buttons) under that one column. Do not mix in other layout containers at the box level.
+
+**Default `col.separator()` for every visual break.** Adjacent items in the column render flush (shared borders, no gap). Drop in a default `col.separator()` to introduce a small consistent gap. Same primitive for all small breaks: param-group → param-group, action → action, etc.
+
+**`col.separator(factor=1.5)` for the param-block → action-button transition.** This is the *only* place a non-default factor is used — it marks the visual jump from "data inputs" to "things to do with them". Don't reach for other custom factors.
+
+**Avoid `box.separator()`** directly on the box — renders bigger and inconsistent with the in-aligned-column separators.
+
+**Conditional enable on rows, not ops.** When an operator should be greyed out conditionally, wrap it in `place_row = col.row(align=True)`, set `place_row.enabled = condition`, then call `place_row.operator(...)`. Keeps the column structure unbroken.
+
+**Proportional rows (icon-only ops with fixed widths).** Use nested `layout.split(factor=...)` calls for explicit width proportions — *not* `row(align=True) + scale_x` on sub-rows. Blender shrink-wraps icon-only ops to natural width and ignores `scale_x`, leaving empty space at the panel edges. For an A/B/C-proportioned row:
+```python
+outer = layout.split(factor=A_fraction, align=True)
+outer.<item-A>(...)               # fills slot 1 (A%)
+inner = outer.split(factor=B_fraction_of_remaining, align=True)
+inner.<item-B>(...)
+inner.<item-C>(...)
+```
+
 ## Reference material (in-repo)
 
 User-authored Python scripts implementing the layer-placement algorithms being ported into the add-on:
