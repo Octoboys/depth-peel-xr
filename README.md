@@ -25,7 +25,7 @@ This repo is in early bootstrap. Implementation is broken into phases with expli
 | 0 | Dev environment bootstrap | complete |
 | 1 | Portal Rig + Infrastructure | complete |
 | 2 | Layer Placement | complete |
-| 3 | Multi-view Capture | pending |
+| 3 | Multi-view Capture | in progress (capture + cleanup + auto-wipe shipped; `core/multi_view.py` consolidation pending) |
 | 4 | Reconstruction + Preview | pending |
 | 5 | Occlusion Culling | pending |
 | 6 | USD Export (user-activated) | pending |

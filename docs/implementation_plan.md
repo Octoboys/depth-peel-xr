@@ -257,25 +257,36 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 **Goal**: for each placed layer, capture NxN RGBA + depth passes with the layer's depth slab enforced.
 
 **Scope**:
-- `DEPTHPEELXR_OT_capture` operator:
-  - For each of the NxN cameras × each layer: set `camera.data.clip_start = layer.near`, `clip_end = layer.far`, render RGBA + Z pass, write to `<project>/captures/layer_NN/view_MM_{color,depth}.exr`.
-  - Engine selector (Cycles / EEVEE Next).
+- `DEPTHPEELXR_OT_capture` modal operator:
+  - For each of the NxN cameras × each layer: set `camera.data.clip_start = layer.near`, `clip_end = layer.far`, render RGBA + Z pass, write to `<project>/captures/layer_NN/view_MM.exr` as a multilayer EXR (Blender 5.x's File Output is multilayer-only, so each EXR contains both `Combined` (RGBA) and `Depth` (FLOAT) channels — slice 2's reader opens one file per (layer, view) instead of two).
+  - Engine selector (Cycles / EEVEE), default EEVEE for fast iteration.
   - Resolution driven by `viewing_resolution` from PortalRigProps, with the secondary dimension derived from portal aspect.
-  - Modal operator with progress.
-- `DEPTHPEELXR_OT_cleanup_captures`: deletes the captures subfolder, clears any cached image references.
+  - Auto-wipes `captures/` only when the existing layout (existing files outside the expected `layer_NN/view_MM.exr` set) doesn't match the upcoming run — protects Phase 4 from picking up stale orphans after `grid_n` or `layer_count` changes. Layout-matching content (same dirs, same filenames) is overwritten cleanly without wipe.
+  - State save/restore: render engine, samples, resolution, view-layer Z-pass, scene compositor node group, scene.camera, every rig camera's clip range. `_restore_state` is idempotent and runs from FINISHED, CANCELLED, exception, and Blender's `cancel()` callback.
+  - ESC sets a deferred-cancel flag — `bpy.ops.render.render` is fully synchronous, so cancellation actually triggers at the next render boundary. Header text shows `(cancelling…)` between request and effect.
+- `DEPTHPEELXR_OT_cleanup_captures`: deletes the captures subfolder.
 - `core/multi_view.py` — reproject each sibling view's RGBA into the canonical centre view via `(ndc, depth) → world → centre-ndc` and composite where the centre view's coverage is missing. Produces `(rgba_canonical, depth_canonical, coverage_mask)` per layer.
-- N-panel section `Capture`: engine dropdown, output path display, `Run Capture`, cleanup button.
+- N-panel section `Capture`: engine dropdown, "X queued / N done" status, `Run Capture`, `Clean Up Captures`.
+
+**Status**: slice 1 shipped, slice 2 pending.
+
+- **Slice 1 (shipped)** — capture operator + cleanup + N-panel + auto-wipe-on-layout-change. Multilayer EXR output via Render Layers → File Output compositor. Modal with deferred-ESC cancel.
+- **Slice 2 (pending)** — `core/multi_view.py` consolidation: reproject sibling views into the canonical centre, composite into one canonical RGBA + depth + coverage_mask per layer. The disocclusion-fill is the algorithmic chunk. Operator extension to invoke consolidation post-capture and write `consolidated/layer_NN_{color,depth}.exr`.
 
 **Acceptance**:
-- N=3, L=4 produces 36 RGBA + 36 depth EXRs on disk in the expected layout.
+- N=3, L=4 produces 36 multilayer EXRs at `<project>/captures/layer_00/view_00.exr` … `view_08.exr`, etc. Each EXR has `Combined` (RGBA, float32) and `Depth` (float32) channels.
 - Depth-slab clipping works in both engines (inspect outermost layer: nothing nearer than `near`, nothing further than `far`).
-- Consolidated canonical RGBA per layer covers pixels visible from head-plane extremes but occluded from centre view.
+- Consolidated canonical RGBA per layer covers pixels visible from head-plane extremes but occluded from centre view (slice 2).
 - Cleanup removes the captures directory.
+- ESC during run leaves the scene in a sensible state (cameras / engine / compositor restored, partial outputs on disk OK).
 
-**Gotchas (from Blender API recon)**:
-- Cycles and EEVEE Next both respect `camera.data.clip_start/clip_end`.
-- Depth-pass access differs between engines (`ViewLayer.cycles` vs `ViewLayer.eevee`); wrapped behind a single helper.
-- Both engines return camera-axis Z; inverse projection uses that directly.
+**Gotchas (Blender 5.x API recon)**:
+- Compositor API renamed from 4.x: scenes hold `compositing_node_group` (a NodeGroup asset) — `scene.use_nodes` / `scene.node_tree` are gone. File Output node uses `directory` / `file_name` (was `base_path`) and `file_output_items.new(socket_type, name)` (was `file_slots.new`); only `OPEN_EXR_MULTILAYER` format is exposed (use socket_type `RGBA` for color, `FLOAT` for single-channel passes).
+- `view_layer.use_pass_z = True` must be set before `rl.outputs["Depth"]` is name-lookable — the socket only appears when the pass is active.
+- Workbench engine does not populate the Viewer node; stick to BLENDER_EEVEE for compositor-based depth reads.
+- Render engine enum is `BLENDER_EEVEE` in 5.x (not `BLENDER_EEVEE_NEXT`).
+- `bpy.ops.render.render(write_still=False)` is fully synchronous and uninterruptible from Python — modal operators can only cancel between renders.
+- File Output appends `<frame:04d>` to the filename even with multilayer; rename post-render to strip it for predictable consumer paths.
 
 **Verification**: manual render of a known scene; compare depth pass to analytic expectation; visually inspect consolidated textures.
 
