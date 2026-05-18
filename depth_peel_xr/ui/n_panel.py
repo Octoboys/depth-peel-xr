@@ -124,6 +124,14 @@ class DEPTHPEELXR_PT_main(Panel):
             col.separator(factor=1.5)
             col.operator("depthpeelxr.capture", icon="RENDER_STILL")
             col.separator()
+            consolidate_row = col.row(align=True)
+            consolidate_row.enabled = expected_captures_present(context)
+            consolidate_row.operator(
+                "depthpeelxr.consolidate_views",
+                text="Consolidate Views",
+                icon="NODE_COMPOSITING",
+            )
+            col.separator()
             col.operator(
                 "depthpeelxr.cleanup_captures",
                 text="Clean Up Captures",

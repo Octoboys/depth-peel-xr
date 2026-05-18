@@ -3,6 +3,7 @@ from .operators import portal_rig as op_portal_rig
 from .operators import inspect as op_inspect
 from .operators import layer_placement as op_layer_placement
 from .operators import capture as op_capture
+from .operators import consolidate as op_consolidate
 from .operators import preview as op_preview
 from .ui import n_panel
 from .ui import overlays
@@ -14,6 +15,7 @@ _MODULES = (
     op_inspect,
     op_layer_placement,
     op_capture,
+    op_consolidate,
     op_preview,
     n_panel,
     overlays,
