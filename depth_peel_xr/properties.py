@@ -101,16 +101,22 @@ class PortalRigProps(PropertyGroup):
         soft_max=9,
         update=_on_rig_param_change,
     )
-    viewing_resolution: IntProperty(
+    viewing_resolution: EnumProperty(
         name="Viewing Resolution",
         description=(
-            "Render resolution along the portal's longer axis; the other "
-            "dimension is derived from the portal's aspect ratio"
+            "Render resolution along the portal's longer axis (the other "
+            "dimension is derived from the portal's aspect ratio). "
+            "Power-of-2 only — keeps the canonical canvas dimensions and "
+            "quadtree subdivisions cleanly aligned"
         ),
-        default=1024,
-        min=64,
-        soft_max=4096,
-        subtype="PIXEL",
+        items=(
+            ("256", "256 px", "Fast iteration"),
+            ("512", "512 px", "Medium"),
+            ("1024", "1024 px", "Default"),
+            ("2048", "2048 px", "High"),
+            ("4096", "4096 px", "Max — large memory / disk use"),
+        ),
+        default="1024",
         update=_on_rig_param_change,
     )
 
@@ -194,7 +200,22 @@ class CaptureProps(PropertyGroup):
     )
 
 
-CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps, CaptureProps)
+class ReconstructionProps(PropertyGroup):
+    min_quad_size: IntProperty(
+        name="Min Quad Size",
+        description=(
+            "Smallest quadtree leaf size in canonical-image pixels. "
+            "Border quads stop subdividing at this floor; smaller values "
+            "give finer silhouettes at the cost of more polygons"
+        ),
+        default=8,
+        min=1,
+        soft_max=64,
+        subtype="PIXEL",
+    )
+
+
+CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps, CaptureProps, ReconstructionProps)
 
 
 def register():
@@ -204,9 +225,11 @@ def register():
     bpy.types.Scene.dpx_paths = PointerProperty(type=PathsProps)
     bpy.types.Scene.dpx_layer_placement = PointerProperty(type=LayerPlacementProps)
     bpy.types.Scene.dpx_capture = PointerProperty(type=CaptureProps)
+    bpy.types.Scene.dpx_reconstruction = PointerProperty(type=ReconstructionProps)
 
 
 def unregister():
+    del bpy.types.Scene.dpx_reconstruction
     del bpy.types.Scene.dpx_capture
     del bpy.types.Scene.dpx_layer_placement
     del bpy.types.Scene.dpx_paths

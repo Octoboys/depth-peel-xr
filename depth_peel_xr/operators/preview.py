@@ -32,6 +32,10 @@ from .portal_rig import ensure_collection, link_unique
 
 
 _PREVIEW_PREFIX = "dpxr_preview_layer_"
+# Reconstruction-mesh objects (Phase 4) share the cleanup path — mutually
+# exclusive with simple-plane preview, both live in DepthPeelXR_Preview.
+_RECON_PREFIX = "dpxr_recon_layer_"
+_GEO_PREFIXES = (_PREVIEW_PREFIX, _RECON_PREFIX)
 
 
 def _centre_view_index(n_views: int) -> int:
@@ -127,20 +131,26 @@ def _build_preview_material(
 
 
 def _remove_preview_objects() -> int:
+    """Wipe both simple-plane (`dpxr_preview_layer_*`) and reconstruction
+    (`dpxr_recon_layer_*`) entities. They share the cleanup path because
+    they're mutually exclusive — only one geo flavour at a time."""
+    def starts_with_any(name: str) -> bool:
+        return any(name.startswith(p) for p in _GEO_PREFIXES)
+
     removed = 0
-    for obj in [o for o in bpy.data.objects if o.name.startswith(_PREVIEW_PREFIX)]:
+    for obj in [o for o in bpy.data.objects if starts_with_any(o.name)]:
         mesh = obj.data if isinstance(obj.data, bpy.types.Mesh) else None
         bpy.data.objects.remove(obj, do_unlink=True)
         if mesh is not None and mesh.users == 0:
             bpy.data.meshes.remove(mesh)
         removed += 1
-    for mesh in [m for m in bpy.data.meshes if m.name.startswith(_PREVIEW_PREFIX)]:
+    for mesh in [m for m in bpy.data.meshes if starts_with_any(m.name)]:
         if mesh.users == 0:
             bpy.data.meshes.remove(mesh)
-    for mat in [m for m in bpy.data.materials if m.name.startswith(_PREVIEW_PREFIX)]:
+    for mat in [m for m in bpy.data.materials if starts_with_any(m.name)]:
         if mat.users == 0:
             bpy.data.materials.remove(mat)
-    for img in [i for i in bpy.data.images if i.name.startswith(_PREVIEW_PREFIX)]:
+    for img in [i for i in bpy.data.images if starts_with_any(i.name)]:
         if img.users == 0:
             bpy.data.images.remove(img)
     return removed
@@ -159,10 +169,11 @@ def _restore_source_view() -> None:
 
 
 def invalidate_flat_preview(context) -> None:
-    """Drop all flat-preview entities and flip back to source view.
-    Cheap no-op when no preview exists. Called from properties.py update
-    callbacks whenever a rig/layer param changes and the on-screen preview
-    would become stale, plus from operators that invalidate captures."""
+    """Drop all reconstruction geo (simple planes AND quadtree meshes) and
+    flip back to source view. Cheap no-op when nothing exists. Called from
+    properties.py update callbacks whenever a rig/layer param changes and
+    the on-screen geo would become stale, plus from operators that
+    invalidate captures."""
     coll = bpy.data.collections.get(PREVIEW_COLLECTION)
     if coll is None or not coll.objects:
         return

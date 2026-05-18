@@ -7,6 +7,7 @@ from .. import paths
 from ..operators.inspect import get_view_cameras_sorted
 from ..operators.portal_rig import CAM_PREFIX
 from ..operators.preview import expected_captures_present
+from ..operators.reconstruct import consolidated_present
 
 
 class DEPTHPEELXR_PT_main(Panel):
@@ -141,20 +142,34 @@ class DEPTHPEELXR_PT_main(Panel):
             preview_box = layout.box()
             preview_box.label(text="Reconstruction", icon="MOD_BUILD")
             col = preview_box.column(align=True)
-            preview_ready = expected_captures_present(context)
-            if preview_ready:
-                col.label(text="Flat cutouts — centre view at layer.near")
+            recon = scene.dpx_reconstruction
+            col.prop(recon, "min_quad_size")
+            simple_ready = expected_captures_present(context)
+            quadtree_ready = consolidated_present(context)
+            col.separator()
+            if quadtree_ready:
+                col.label(text="Quadtree ready — consolidated/ on disk")
+            elif simple_ready:
+                col.label(text="Simple planes only — run Consolidate Views")
             elif n_layers and n_views:
                 col.label(text="Run capture to enable preview")
             else:
                 col.label(text="Place layers to enable preview")
             col.separator(factor=1.5)
-            preview_row = col.row(align=True)
-            preview_row.enabled = preview_ready
-            preview_row.operator(
+            simple_row = col.row(align=True)
+            simple_row.enabled = simple_ready
+            simple_row.operator(
                 "depthpeelxr.preview_flat",
                 text="Build Simple Planes",
                 icon="MESH_PLANE",
+            )
+            col.separator()
+            quadtree_row = col.row(align=True)
+            quadtree_row.enabled = quadtree_ready
+            quadtree_row.operator(
+                "depthpeelxr.reconstruct_flat",
+                text="Build Flat Quadtree",
+                icon="MOD_REMESH",
             )
             col.separator()
             col.operator(
