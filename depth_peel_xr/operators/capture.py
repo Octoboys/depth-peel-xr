@@ -1,19 +1,33 @@
-"""Multi-view capture: per-layer NxN renders writing multilayer EXRs.
+"""Multi-view capture: per-layer NxN renders writing flat OpenEXR
+pairs.
 
 Phase 3 slice 1.
 
 Output layout:
-    <project>/captures/layer_NN/view_MM.exr   (multilayer: Combined + Depth)
+    <project>/captures/layer_NN/view_MM_color.exr   (RGBA float32, scene-linear)
+    <project>/captures/layer_NN/view_MM_depth.exr   (depth pass, RGBA float32 with R = z)
 
-The operator is modal so the UI stays responsive and ESC cancels at the
-next render boundary (`bpy.ops.render.render` is fully synchronous so
-mid-render cancel isn't possible — see CLAUDE.md / implementation_plan).
+Two renders per (layer, view):
+  - Color: no compositor, standard render path writes Combined directly
+    to scene.render.filepath as flat OPEN_EXR.
+  - Depth: RL→Viewer compositor, drain Viewer to numpy, save as flat
+    OPEN_EXR via a throw-away `bpy.data.images.new`.
 
-State save/restore covers everything we touch: render engine, samples,
-resolution, view-layer Z-pass enable, scene compositor node group,
-scene.camera, and per-camera clip ranges. `_restore_state` is idempotent
-and called from every exit path (FINISHED, CANCELLED, exception, Blender
-cancel callback).
+5.x compositor notes:
+  - File Output writes multilayer-only EXRs, which Python `Image.pixels`
+    can't pick individual passes from — so we never use it.
+  - A non-empty compositor without a Composite-equivalent output node
+    (CompositorNodeComposite was removed in 5.x; NodeGroupOutput is the
+    replacement) doesn't populate `Render Result`. Hence the color pass
+    runs with no compositor at all.
+  - Mutating live `Viewer Node` / `Render Result` images (e.g. via
+    `viewer.save()` or `result.save_render()`) corrupts subsequent
+    renders — we always drain pixels into numpy first and save via a
+    fresh image.
+
+Modal: timer-driven loop, ESC cancels at the next view boundary
+(`bpy.ops.render.render` is fully synchronous and uninterruptible from
+Python, so cancellation lands between renders).
 """
 
 from __future__ import annotations
@@ -22,6 +36,7 @@ import shutil
 from pathlib import Path
 
 import bpy
+import numpy as np
 from bpy.types import Operator
 
 from .. import paths as paths_mod
@@ -42,17 +57,22 @@ def _layer_dir(captures: Path, layer_idx: int) -> Path:
     return captures / f"layer_{layer_idx:02d}"
 
 
-def _view_filename(view_idx: int) -> str:
-    return f"view_{view_idx:02d}"
+def _color_path(layer_dir: Path, view_idx: int) -> Path:
+    return layer_dir / f"view_{view_idx:02d}_color.exr"
 
 
-def _build_capture_compositor(scene, layer_dir: Path, view_name: str):
-    """Build a Render Layers → File Output graph writing multilayer EXR
-    with `Combined` (RGBA) and `Depth` (FLOAT) channels.
+def _depth_path(layer_dir: Path, view_idx: int) -> Path:
+    return layer_dir / f"view_{view_idx:02d}_depth.exr"
 
-    NOTE: caller must enable `view_layer.use_pass_z = True` before
-    invoking — otherwise `rl.outputs["Depth"]` lookup fails (the socket
-    only exists when the pass is active).
+
+def _build_depth_compositor(scene):
+    """RL.Depth → Viewer. Same pattern as the layer-placement depth
+    probe — Viewer reliably populates after `bpy.ops.render.render`.
+    No Composite/Output: the depth pass is consumed via Viewer drain,
+    not the standard render output.
+
+    NOTE: caller must enable `view_layer.use_pass_z = True` first —
+    `rl.outputs["Depth"]` only exists when the pass is active.
     """
     saved_tree = scene.compositing_node_group
 
@@ -63,22 +83,9 @@ def _build_capture_compositor(scene, layer_dir: Path, view_name: str):
     rl = tree.nodes.new("CompositorNodeRLayers")
     rl.scene = scene
 
-    out = tree.nodes.new("CompositorNodeOutputFile")
-    out.directory = str(layer_dir)
-    out.file_name = view_name
-    out.format.file_format = "OPEN_EXR_MULTILAYER"
-    out.format.color_depth = "32"
-    # Write scene-linear data (no view transform) — this output will be
-    # consumed by Phase 4 reconstruction, not displayed directly.
-    out.save_as_render = False
-
-    out.file_output_items.clear()
-    out.file_output_items.new("RGBA", "Combined")
-    out.file_output_items.new("FLOAT", "Depth")
-
-    tree.links.new(rl.outputs["Image"], out.inputs["Combined"])
-    tree.links.new(rl.outputs["Depth"], out.inputs["Depth"])
-    return saved_tree, out
+    viewer = tree.nodes.new("CompositorNodeViewer")
+    tree.links.new(rl.outputs["Depth"], viewer.inputs["Image"])
+    return saved_tree
 
 
 def _restore_compositor(scene, saved_tree) -> None:
@@ -88,21 +95,51 @@ def _restore_compositor(scene, saved_tree) -> None:
         bpy.data.node_groups.remove(tree)
 
 
-def _strip_frame_suffix(written_path: Path, target_path: Path) -> None:
-    """File Output appends `<frame:04d>` to the filename. Rename to the
-    spec'd `view_MM.exr` for predictable consumer paths."""
-    if written_path.exists():
-        if target_path.exists():
-            target_path.unlink()
-        written_path.rename(target_path)
+_SAVE_TMP_IMAGE_NAME = "_dpx_capture_save_tmp"
 
 
-def _layer_count(scene) -> int:
-    return len(scene.dpx_layer_placement.layers)
+def _save_rgba_as_flat_exr(target: Path, rgba: np.ndarray) -> None:
+    """Write an (H, W, 4) float32 RGBA array to disk as a flat OPEN_EXR.
+    Uses a fresh, throw-away `bpy.data.images` entry so existing images
+    (like 'Viewer Node' and 'Render Result') aren't mutated as a
+    side-effect — that breaks subsequent renders in 5.x."""
+    H, W, _ = rgba.shape
+    existing = bpy.data.images.get(_SAVE_TMP_IMAGE_NAME)
+    if existing is not None:
+        bpy.data.images.remove(existing)
+    img = bpy.data.images.new(
+        _SAVE_TMP_IMAGE_NAME, width=W, height=H, alpha=True, float_buffer=True
+    )
+    img.colorspace_settings.name = "Non-Color"
+    try:
+        img.pixels.foreach_set(rgba.astype(np.float32, copy=False).ravel())
+        img.filepath_raw = str(target)
+        img.file_format = "OPEN_EXR"
+        img.save()
+    finally:
+        bpy.data.images.remove(img)
 
 
-def _view_count() -> int:
-    return len(get_view_cameras_sorted())
+def _save_viewer_as_depth_exr(target: Path) -> None:
+    """Drain the Depth pass from Viewer Node into numpy, write as flat
+    OPEN_EXR via a throw-away image. Never calls `viewer.save()` —
+    that mutates the Viewer image's state (sets filepath_raw, marks
+    saved-to-disk) and subsequent renders silently don't refresh it."""
+    viewer = bpy.data.images.get("Viewer Node")
+    if viewer is None:
+        raise RuntimeError("'Viewer Node' image missing — compositor did not run")
+    W, H = viewer.size
+    if W == 0 or H == 0 or viewer.channels == 0:
+        raise RuntimeError("'Viewer Node' image has no data after render")
+    buf = np.empty(H * W * viewer.channels, dtype=np.float32)
+    viewer.pixels.foreach_get(buf)
+    arr = buf.reshape(H, W, viewer.channels)
+    rgba = np.zeros((H, W, 4), dtype=np.float32)
+    # Depth pass is single-channel; Blender replicates into RGBA so any
+    # channel works — pick R for clarity downstream (consolidate reads R).
+    rgba[..., 0] = arr[..., 0]
+    rgba[..., 3] = 1.0
+    _save_rgba_as_flat_exr(target, rgba)
 
 
 def _engine_samples(scene, engine: str) -> tuple[str, int] | None:
@@ -127,7 +164,11 @@ def _captures_have_layout_orphans(captures: Path, n_layers: int, n_views: int) -
     if not captures.exists():
         return False
     expected = {
-        f"layer_{l:02d}/view_{v:02d}.exr"
+        f"layer_{l:02d}/view_{v:02d}_color.exr"
+        for l in range(n_layers)
+        for v in range(n_views)
+    } | {
+        f"layer_{l:02d}/view_{v:02d}_depth.exr"
         for l in range(n_layers)
         for v in range(n_views)
     }
@@ -135,6 +176,9 @@ def _captures_have_layout_orphans(captures: Path, n_layers: int, n_views: int) -
         if not p.is_file():
             continue
         rel = p.relative_to(captures).as_posix()
+        # Allow the consolidated/ subtree — it's owned by a downstream op.
+        if rel.startswith("consolidated/"):
+            continue
         if rel not in expected:
             return True
     return False
@@ -144,8 +188,8 @@ class DEPTHPEELXR_OT_capture(Operator):
     bl_idname = "depthpeelxr.capture"
     bl_label = "Run Capture"
     bl_description = (
-        "Render every rig camera × every placed layer to a multilayer EXR. "
-        "Modal — ESC cancels at the next render boundary."
+        "Render every rig camera × every placed layer to a (color, depth) "
+        "OpenEXR pair. Modal — ESC cancels at the next view boundary."
     )
     bl_options = {"REGISTER"}
 
@@ -165,7 +209,6 @@ class DEPTHPEELXR_OT_capture(Operator):
     def invoke(self, context, event):
         scene = context.scene
         view_layer = context.view_layer
-        rig = scene.dpx_portal_rig
         capture = scene.dpx_capture
         lp = scene.dpx_layer_placement
 
@@ -179,13 +222,8 @@ class DEPTHPEELXR_OT_capture(Operator):
             self.report({"ERROR"}, "Project root unresolved (save the .blend first)")
             return {"CANCELLED"}
 
-        # New captures invalidate any flat preview (images will be replaced
-        # on disk; cached image data in Blender would otherwise display stale).
         invalidate_flat_preview(context)
 
-        # Wipe captures only when the existing layout doesn't match what
-        # this run will write — protects Phase 4 from picking up stale
-        # files left by a previous run with different grid_n / layer_count.
         if _captures_have_layout_orphans(captures, len(lp.layers), len(cams)):
             try:
                 shutil.rmtree(captures)
@@ -194,18 +232,17 @@ class DEPTHPEELXR_OT_capture(Operator):
                 return {"CANCELLED"}
             self.report({"INFO"}, "Wiped stale captures from a previous run with a different layout")
 
-        # Build iteration plan: (layer_idx, view_idx, layer_near, layer_far, cam).
-        self._plan = []
-        for li, layer in enumerate(lp.layers):
-            for vi, cam in enumerate(cams):
-                self._plan.append((li, vi, float(layer.near), float(layer.far), cam))
+        self._plan = [
+            (li, vi, float(layer.near), float(layer.far), cam)
+            for li, layer in enumerate(lp.layers)
+            for vi, cam in enumerate(cams)
+        ]
         self._cursor = 0
         self._total = len(self._plan)
         self._completed = 0
         self._captures_dir = captures
         self._should_cancel = False
 
-        # Save state.
         self._saved = {
             "engine": scene.render.engine,
             "res_x": scene.render.resolution_x,
@@ -214,6 +251,10 @@ class DEPTHPEELXR_OT_capture(Operator):
             "use_pass_z": view_layer.use_pass_z,
             "film_transparent": scene.render.film_transparent,
             "camera": scene.camera,
+            "filepath": scene.render.filepath,
+            "file_format": scene.render.image_settings.file_format,
+            "color_depth": scene.render.image_settings.color_depth,
+            "color_mode": scene.render.image_settings.color_mode,
         }
         self._saved_samples = _engine_samples(scene, capture.engine)
         self._saved_tree = scene.compositing_node_group
@@ -221,19 +262,14 @@ class DEPTHPEELXR_OT_capture(Operator):
             cam.name: (cam.data.clip_start, cam.data.clip_end) for cam in cams
         }
 
-        # Apply baseline render config.
         try:
             scene.render.engine = capture.engine
             view_layer.use_pass_z = True
-            # Film transparency so Combined.Alpha encodes per-pixel coverage.
-            # Without this, "miss" pixels (out-of-slab / no hit) take the
-            # world background colour with alpha=1, polluting downstream
-            # layer compositing and the flat-cutout preview.
             scene.render.film_transparent = True
-            # Resolution comes from the rig's `viewing_resolution` already
-            # baked into scene.render via _apply_portal_render_resolution
-            # (called by the rig's resync) — no extra mutation needed.
             scene.render.resolution_percentage = 100
+            scene.render.image_settings.file_format = "OPEN_EXR"
+            scene.render.image_settings.color_depth = "32"
+            scene.render.image_settings.color_mode = "RGBA"
         except TypeError as exc:
             self._restore_state(context)
             self.report({"ERROR"}, f"Engine setup failed: {exc}")
@@ -262,9 +298,10 @@ class DEPTHPEELXR_OT_capture(Operator):
             return self._finish(context)
 
         try:
-            self._render_one(context)
+            self._render_one_view(context)
         except Exception as exc:
-            return self._abort(context, f"Render failed: {exc}")
+            li, vi, *_ = self._plan[self._cursor]
+            return self._abort(context, f"Render failed at layer {li} view {vi}: {exc}")
 
         self._cursor += 1
         self._completed += 1
@@ -277,28 +314,35 @@ class DEPTHPEELXR_OT_capture(Operator):
         self._restore_state(context)
         return None
 
-    def _render_one(self, context):
+    def _render_one_view(self, context):
+        """Two renders for one (layer, view): color (no compositor,
+        standard render path) and depth (RL→Viewer, drain Viewer)."""
         scene = context.scene
-        layer_idx, view_idx, near, far, cam = self._plan[self._cursor]
+        li, vi, near, far, cam = self._plan[self._cursor]
 
-        layer_dir = _layer_dir(self._captures_dir, layer_idx)
+        layer_dir = _layer_dir(self._captures_dir, li)
         layer_dir.mkdir(parents=True, exist_ok=True)
-        view_name = _view_filename(view_idx)
-
         cam.data.clip_start = near
         cam.data.clip_end = far
         scene.camera = cam
 
-        saved_tree, _out = _build_capture_compositor(scene, layer_dir, view_name)
-        try:
-            bpy.ops.render.render(write_still=False)
-        finally:
-            _restore_compositor(scene, saved_tree)
+        color_target = _color_path(layer_dir, vi)
+        depth_target = _depth_path(layer_dir, vi)
 
-        # File Output appends frame number; rename to the spec'd path.
-        written = layer_dir / f"{view_name}{scene.frame_current:04d}.exr"
-        target = layer_dir / f"{view_name}.exr"
-        _strip_frame_suffix(written, target)
+        scene.compositing_node_group = None
+        scene.render.filepath = str(color_target.with_suffix(""))
+        result = bpy.ops.render.render(write_still=True)
+        if "FINISHED" not in result:
+            raise RuntimeError(f"color render returned {result} (check system console)")
+
+        depth_tree = _build_depth_compositor(scene)
+        try:
+            result = bpy.ops.render.render(write_still=False)
+            if "FINISHED" not in result:
+                raise RuntimeError(f"depth render returned {result} (check system console)")
+            _save_viewer_as_depth_exr(depth_target)
+        finally:
+            _restore_compositor(scene, depth_tree)
 
     def _finish(self, context):
         self._restore_state(context)
@@ -321,7 +365,6 @@ class DEPTHPEELXR_OT_capture(Operator):
         if getattr(self, "_timer", None) is not None:
             wm.event_timer_remove(self._timer)
             self._timer = None
-        # Clear header text.
         for area in context.screen.areas:
             if area.type == "VIEW_3D":
                 area.header_text_set(None)
@@ -338,47 +381,58 @@ class DEPTHPEELXR_OT_capture(Operator):
     def _restore_state(self, context):
         if not getattr(self, "_saved", None):
             return
-        scene = context.scene
-        view_layer = context.view_layer
+        _restore_state(
+            context.scene,
+            context.view_layer,
+            self._saved,
+            self._saved_samples,
+            self._saved_tree,
+            self._saved_cam_clips,
+        )
+        self._saved = None  # idempotent on repeat calls
 
-        # Restore compositor (in case _render_one died mid-flight without
-        # cleaning up its temp tree).
-        if scene.compositing_node_group is not None and (
-            scene.compositing_node_group.name == _CAPTURE_NODE_TREE_NAME
-        ):
-            _restore_compositor(scene, self._saved_tree)
-        else:
-            scene.compositing_node_group = self._saved_tree
 
-        scene.render.engine = self._saved["engine"]
-        scene.render.resolution_x = self._saved["res_x"]
-        scene.render.resolution_y = self._saved["res_y"]
-        scene.render.resolution_percentage = self._saved["res_pct"]
-        view_layer.use_pass_z = self._saved["use_pass_z"]
-        scene.render.film_transparent = self._saved["film_transparent"]
-        scene.camera = self._saved["camera"]
+def _restore_state(scene, view_layer, saved, saved_samples, saved_tree, saved_cam_clips):
+    # Restore compositor — handles the case where a render died mid-flight
+    # without cleaning up its temp tree.
+    if scene.compositing_node_group is not None and (
+        scene.compositing_node_group.name == _CAPTURE_NODE_TREE_NAME
+    ):
+        _restore_compositor(scene, saved_tree)
+    else:
+        scene.compositing_node_group = saved_tree
 
-        if self._saved_samples is not None:
-            attr_path, value = self._saved_samples
-            obj = scene
-            parts = attr_path.split(".")
-            for p in parts[:-1]:
-                obj = getattr(obj, p, None)
-                if obj is None:
-                    break
-            if obj is not None:
-                try:
-                    setattr(obj, parts[-1], value)
-                except (AttributeError, TypeError):
-                    pass
+    scene.render.engine = saved["engine"]
+    scene.render.resolution_x = saved["res_x"]
+    scene.render.resolution_y = saved["res_y"]
+    scene.render.resolution_percentage = saved["res_pct"]
+    view_layer.use_pass_z = saved["use_pass_z"]
+    scene.render.film_transparent = saved["film_transparent"]
+    scene.render.filepath = saved["filepath"]
+    scene.render.image_settings.file_format = saved["file_format"]
+    scene.render.image_settings.color_depth = saved["color_depth"]
+    scene.render.image_settings.color_mode = saved["color_mode"]
+    scene.camera = saved["camera"]
 
-        for cam_name, (cs, ce) in self._saved_cam_clips.items():
-            cam = bpy.data.objects.get(cam_name)
-            if cam is not None and cam.type == "CAMERA":
-                cam.data.clip_start = cs
-                cam.data.clip_end = ce
+    if saved_samples is not None:
+        attr_path, value = saved_samples
+        obj = scene
+        parts = attr_path.split(".")
+        for p in parts[:-1]:
+            obj = getattr(obj, p, None)
+            if obj is None:
+                break
+        if obj is not None:
+            try:
+                setattr(obj, parts[-1], value)
+            except (AttributeError, TypeError):
+                pass
 
-        self._saved = None  # mark restored — idempotent on repeat calls
+    for cam_name, (cs, ce) in saved_cam_clips.items():
+        cam = bpy.data.objects.get(cam_name)
+        if cam is not None and cam.type == "CAMERA":
+            cam.data.clip_start = cs
+            cam.data.clip_end = ce
 
 
 class DEPTHPEELXR_OT_cleanup_captures(Operator):

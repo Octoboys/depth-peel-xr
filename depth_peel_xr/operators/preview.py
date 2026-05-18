@@ -40,7 +40,7 @@ def _centre_view_index(n_views: int) -> int:
 
 
 def _layer_centre_exr(captures: Path, layer_idx: int, view_idx: int) -> Path:
-    return captures / f"layer_{layer_idx:02d}" / f"view_{view_idx:02d}.exr"
+    return captures / f"layer_{layer_idx:02d}" / f"view_{view_idx:02d}_color.exr"
 
 
 def expected_captures_present(context) -> bool:
