@@ -295,34 +295,40 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 
 ### Phase 4 — Reconstruction + Preview
 
-**Goal**: build per-layer displaced quad meshes with interior/border subsets, populate `DepthPeelXR_Preview` collection, preview is immediately visible.
+**Goal**: build per-layer adaptive quad meshes with interior/border subsets, populate `DepthPeelXR_Preview` collection, preview is immediately visible.
+
+**Reconstruction-fidelity hierarchy** — three tiers, each strictly supersedes the previous as a quality choice but the previous remains as a faster/cheaper diagnostic. All consume Phase 3 outputs; only the centre-view sanity-check tier skips slice-2 consolidation.
+
+1. **Flat cutouts** (Phase 3 slice-1 polish — shipped). Four verts per layer at `layer.near`, full-rect alpha-test from the raw centre-view EXR. No consolidation needed. Stays as the cheapest capture sanity-check; not a reconstruction option.
+2. **Flat impostors with quadtree** (Phase 4 slice 1 — new). Quadtree-subdivided plane per layer at `layer.near` with proper silhouette-cut borders, no per-vertex depth. Coverage-mask drives subdivision + border/interior classification; vertices stay coplanar. Cheapest *shippable* reconstruction — useful when downstream doesn't need (or can't afford) displacement.
+3. **Displaced quadtree meshes** (Phase 4 slice 2). Same quadtree from slice 1, with per-vertex depth displacement on top via inverse projection. Full parallax inside each layer. The original Phase 4 goal.
 
 **Scope**:
-- `core/quadtree.py` — adaptive quadtree:
-  - Root = portal-frustum quad.
-  - Split rule: if quad straddles coverage-mask edge **and** quad size > `min_quad_size`, subdivide into 4; also subdivide if depth variance within the quad exceeds `depth_gradient_tol`, down to `core_quad_size`.
+- `core/quadtree.py` (slice 1) — adaptive quadtree:
+  - Root = portal-frustum quad sized to the centre camera's frustum cross-section at `layer.near`.
+  - Split rule: if quad straddles coverage-mask edge **and** quad size > `min_quad_size`, subdivide into 4; (slice 2 adds:) also subdivide if depth variance within the quad exceeds `depth_gradient_tol`, down to `core_quad_size`.
   - Leaves classified `interior` (fully covered) or `border` (straddles).
 - `core/reconstruction.py`:
-  - Each leaf vertex's world position via `inverse_projection(ndc_x, ndc_y, depth)` — avoids spurious curvature at wide FoV.
+  - Slice 1: flat vertex placement at `layer.near` in portal-local coords.
+  - Slice 2: each leaf vertex's world position via `inverse_projection(ndc_x, ndc_y, depth_canonical)` — avoids spurious curvature at wide FoV.
   - Build interior and border face arrays.
-  - UVs: screen-space passthrough.
+  - UVs: screen-space passthrough from centre NDC.
   - Border quads: rasterise coverage mask into RGBA texture's alpha channel for that quad's UV region.
-- `DEPTHPEELXR_OT_reconstruct` operator:
-  - For each layer: create `bpy.types.Mesh` with two geom-subset-equivalent vertex groups, build Principled BSDF materials (opaque for interior, alpha-blend for border), spawn as Objects in `DepthPeelXR_Preview` collection.
-  - Move original scene objects into `DepthPeelXR_Source` collection.
-  - Auto-switch visibility to Preview on completion.
-- `DEPTHPEELXR_OT_cleanup_reconstruction`: removes Preview collection contents, restores source visibility.
-- N-panel section `Reconstruction`: `core_quad_size`, `min_quad_size`, `depth_gradient_tol`, `Reconstruct`, cleanup button.
+- `DEPTHPEELXR_OT_reconstruct_flat` (slice 1), `DEPTHPEELXR_OT_reconstruct_displaced` (slice 2):
+  - For each layer: create `bpy.types.Mesh` with two geom-subset-equivalent vertex groups, build emission + alpha-clip materials (interior + border share the canonical RGBA, border has the per-quad coverage rasterised), spawn as Objects in `DepthPeelXR_Preview` collection.
+  - Move original scene objects into `DepthPeelXR_Source` collection (extends slice-1 polish behaviour to also reparent geometry, not just toggle visibility).
+  - Auto-switch visibility to Preview on completion (existing slice-1 mechanism).
+- `Clean Up Geo` operator (already forward-named) extends to cover the new mesh kinds — name prefix scheme generalised from `dpxr_preview_layer_*` to `dpxr_recon_layer_*` once Phase 4 lands, so cleanup walks both prefix families.
+- N-panel `Reconstruction` section gains: `Quadtree params` group (`core_quad_size`, `min_quad_size`, slice-2 adds `depth_gradient_tol`), `Reconstruct Flat`, `Reconstruct Displaced`, all behind the same `Clean Up Geo` and source-toggle plumbing.
+
+**Status**: not started. Depends on Phase 3 slice 2 (`consolidated/layer_NN_*.exr`).
 
 **Acceptance**:
-- Flat wall: interior quads coalesce to coarsest, border quads only at silhouette, all ≥ `min_quad_size`.
-- Detailed layer: depth-gradient subdivision produces finer interior quads in high-variance regions.
-- Head-plane-corner viewpoint shows correct parallax; no z-fighting.
-- Wide-FoV flat-wall test: reconstructed mesh stays planar (verifies inverse-projection maths).
-- Source moves into `DepthPeelXR_Source`; preview appears in `DepthPeelXR_Preview`; toggle operator swaps them.
-- Cleanup restores scene to pre-reconstruction state.
+- Slice 1: silhouettes cleanly follow scene edges (alpha-cut border quads); interior of a flat wall coalesces to coarsest; head-plane-corner view shows correct *occlusion silhouettes* (no parallax expected — flat).
+- Slice 2: depth-gradient subdivision produces finer interior quads in high-variance regions; head-plane-corner view shows correct *parallax* inside each layer; wide-FoV flat-wall test stays planar (verifies inverse-projection maths).
+- Both: source moves into `DepthPeelXR_Source`; preview appears in `DepthPeelXR_Preview`; toggle operator swaps them; `Clean Up Geo` restores scene to pre-reconstruction state.
 
-**Verification**: numpy unit test on synthetic depth maps with known cut edges; manual visual test in Blender.
+**Verification**: numpy unit test on synthetic coverage masks + depth maps with known cut edges; manual visual test in Blender.
 
 ---
 
