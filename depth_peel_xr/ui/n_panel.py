@@ -145,7 +145,7 @@ class DEPTHPEELXR_PT_main(Panel):
             preview_row.enabled = preview_ready
             preview_row.operator(
                 "depthpeelxr.preview_flat",
-                text="Preview Flat Cutouts",
+                text="Build Simple Planes",
                 icon="MESH_PLANE",
             )
             col.separator()
