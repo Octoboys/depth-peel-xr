@@ -14,15 +14,19 @@ from bpy.types import Object, PropertyGroup
 def _on_rig_param_change(self, context):
     from .operators.portal_rig import resync_rig_from_props
     from .operators.layer_placement import repopulate_layers_if_active
+    from .operators.preview import invalidate_flat_preview
 
     resync_rig_from_props(context)
     repopulate_layers_if_active(context)
+    invalidate_flat_preview(context)
 
 
 def _on_layer_param_change(self, context):
     from .operators.layer_placement import repopulate_layers_if_active
+    from .operators.preview import invalidate_flat_preview
 
     repopulate_layers_if_active(context)
+    invalidate_flat_preview(context)
 
 
 class PortalRigProps(PropertyGroup):

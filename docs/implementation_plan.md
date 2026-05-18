@@ -270,8 +270,8 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 
 **Status**: slice 1 shipped, slice 2 pending.
 
-- **Slice 1 (shipped)** — capture operator + cleanup + N-panel + auto-wipe-on-layout-change. Multilayer EXR output via Render Layers → File Output compositor. Modal with deferred-ESC cancel.
-- **Slice 2 (pending)** — `core/multi_view.py` consolidation: reproject sibling views into the canonical centre, composite into one canonical RGBA + depth + coverage_mask per layer. The disocclusion-fill is the algorithmic chunk. Operator extension to invoke consolidation post-capture and write `consolidated/layer_NN_{color,depth}.exr`.
+- **Slice 1 (shipped)** — capture operator + cleanup + N-panel + auto-wipe-on-layout-change. Multilayer EXR output via Render Layers → File Output compositor, rendered with `film_transparent=True` so `Combined.Alpha` encodes per-pixel coverage. Modal with deferred-ESC cancel. Plus an early-staged **Reconstruction** section (Phase 4's section, populated ahead of schedule with slice-1's flat-cutout preview): per-layer alpha-cut plane at `layer.near`, sized to the centre camera's frustum at that depth, textured from the centre-view EXR (Combined.RGB → unlit emission, Combined.Alpha → alpha clip). Auto-invalidates whenever any rig / layer-placement param changes, the layers collection is rewritten, capture re-runs, captures are cleaned, or the rig is torn down — the preview only ever reflects state matching the captures on disk. Building the preview also forces the Source/Preview toggle into "preview view" (Source hidden, Preview shown); invalidation flips it back. Layer-boundary gizmos draw if the Source collection is visible, so they hide as a side-effect of the toggle. Shared math in `core/geometry.py` (super- and centre-frustum extents). `Clean Up Geo` operator is scoped to handle slice-1 cutouts today; Phase 4 will extend it to clean reconstruction meshes too.
+- **Slice 2 (pending)** — `core/multi_view.py` consolidation: reproject sibling views into the canonical centre, composite into one canonical RGBA + depth + coverage_mask per layer. The disocclusion-fill is the algorithmic chunk. Operator extension to invoke consolidation post-capture and write `consolidated/layer_NN_{color,depth}.exr`. Reconstruction section will gain a **Displaced Preview** option (uniform-subdivided plane + Displace modifier driven by `depth_canonical`) once slice 2's outputs exist.
 
 **Acceptance**:
 - N=3, L=4 produces 36 multilayer EXRs at `<project>/captures/layer_00/view_00.exr` … `view_08.exr`, etc. Each EXR has `Combined` (RGBA, float32) and `Depth` (float32) channels.
@@ -279,6 +279,7 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 - Consolidated canonical RGBA per layer covers pixels visible from head-plane extremes but occluded from centre view (slice 2).
 - Cleanup removes the captures directory.
 - ESC during run leaves the scene in a sensible state (cameras / engine / compositor restored, partial outputs on disk OK).
+- Flat-cutout preview shows L alpha-cut planes stacked at each layer's near depth, silhouettes match captured content, depth-sort correct between layers, unlit (visible regardless of scene lighting). Tweaking any rig or layer-placement param while preview is visible → planes disappear immediately, no error spam. Cleanup leaves no orphan datablocks. Re-running preview without cleanup first refreshes in place.
 
 **Gotchas (Blender 5.x API recon)**:
 - Compositor API renamed from 4.x: scenes hold `compositing_node_group` (a NodeGroup asset) — `scene.use_nodes` / `scene.node_tree` are gone. File Output node uses `directory` / `file_name` (was `base_path`) and `file_output_items.new(socket_type, name)` (was `file_slots.new`); only `OPEN_EXR_MULTILAYER` format is exposed (use socket_type `RGBA` for color, `FLOAT` for single-channel passes).
@@ -332,7 +333,7 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
 **Scope**:
 - `core/occlusion.py`:
   - For each layer's quads (walk far-to-near), test visibility by rasterising closer-layer interior meshes into each of the NxN views' depth buffers.
-  - A quad is culled iff all NxN views report it fully occluded (within an epsilon).
+  - A quad is culled if all NxN views report it fully occluded (within an epsilon).
   - Vectorised numpy implementation; no bpy dependency.
 - `DEPTHPEELXR_OT_occlusion_cull` operator: runs the cull on the existing preview meshes, prints stats (quads removed per layer, % reduction).
 - `DEPTHPEELXR_OT_undo_cull`: rebuilds from reconstruction cache (so user can re-enable culled quads without a full rebake).

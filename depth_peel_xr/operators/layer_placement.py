@@ -21,6 +21,7 @@ from ..core.layer_placement import (
     HistogramImportance,
 )
 from .portal_rig import camera_local_rotation_4x4
+from .preview import invalidate_flat_preview
 
 
 _PROBE_CAM_NAME = "DPX_Probe_temp"
@@ -224,6 +225,7 @@ def compute_and_store_layers(context) -> tuple[bool, str]:
     lp = scene.dpx_layer_placement
 
     lp.layers.clear()
+    invalidate_flat_preview(context)
 
     near = float(rig.headplane_offset) + float(rig.min_depth)
     far = float(rig.headplane_offset) + float(rig.max_depth)
@@ -361,6 +363,7 @@ class DEPTHPEELXR_OT_cleanup_layers(Operator):
         lp = context.scene.dpx_layer_placement
         lp.layers.clear()
         lp.auto_recompute = False
+        invalidate_flat_preview(context)
         tag_view3d_redraw()
         return {"FINISHED"}
 
@@ -387,6 +390,13 @@ class DEPTHPEELXR_OT_auto_fit_depth_scope(Operator):
         rig = scene.dpx_portal_rig
         lp = scene.dpx_layer_placement
 
+        def fail(msg: str) -> set:
+            lp.layers.clear()
+            invalidate_flat_preview(context)
+            tag_view3d_redraw()
+            self.report({"ERROR"}, msg)
+            return {"CANCELLED"}
+
         clip_start = 0.001
         clip_end = 1000.0
         try:
@@ -394,10 +404,7 @@ class DEPTHPEELXR_OT_auto_fit_depth_scope(Operator):
                 context, clip_start=clip_start, clip_end=clip_end
             )
         except RuntimeError as exc:
-            lp.layers.clear()
-            tag_view3d_redraw()
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
+            return fail(str(exc))
 
         # Pixels with no geometry hit read as ~clip_end (background
         # sentinel). Exclude them from the extents calculation, otherwise
@@ -409,15 +416,18 @@ class DEPTHPEELXR_OT_auto_fit_depth_scope(Operator):
             & (depth < bg_threshold)
         ]
         if real.size == 0:
-            lp.layers.clear()
-            tag_view3d_redraw()
-            self.report({"ERROR"}, "No scene geometry visible past the portal")
-            return {"CANCELLED"}
+            return fail("No scene geometry visible past the portal")
 
         min_z = float(real.min())
         max_z = float(real.max())
-        new_min = max(0.0, min_z - rig.headplane_offset)
-        new_max = max(new_min + 0.01, max_z - rig.headplane_offset)
+        # Pad the bounds slightly so scene extrema don't sit on the
+        # clip-plane boundary — the low-res probe (256 along long axis)
+        # can miss exact corners by a fraction of a pixel, and float
+        # precision at clip_end clips geometry that's mathematically
+        # in range. 1% of scene depth, floor 1cm.
+        pad = max(0.01, (max_z - min_z) * 0.01)
+        new_min = max(0.0, min_z - rig.headplane_offset - pad)
+        new_max = max(new_min + 0.01, max_z - rig.headplane_offset + pad)
 
         rig.min_depth = new_min
         rig.max_depth = new_max

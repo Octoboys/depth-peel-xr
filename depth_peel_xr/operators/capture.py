@@ -26,6 +26,7 @@ from bpy.types import Operator
 
 from .. import paths as paths_mod
 from .inspect import get_view_cameras_sorted
+from .preview import invalidate_flat_preview
 
 
 _CAPTURE_NODE_TREE_NAME = "DPX_CaptureCompositor_temp"
@@ -178,6 +179,10 @@ class DEPTHPEELXR_OT_capture(Operator):
             self.report({"ERROR"}, "Project root unresolved (save the .blend first)")
             return {"CANCELLED"}
 
+        # New captures invalidate any flat preview (images will be replaced
+        # on disk; cached image data in Blender would otherwise display stale).
+        invalidate_flat_preview(context)
+
         # Wipe captures only when the existing layout doesn't match what
         # this run will write — protects Phase 4 from picking up stale
         # files left by a previous run with different grid_n / layer_count.
@@ -207,6 +212,7 @@ class DEPTHPEELXR_OT_capture(Operator):
             "res_y": scene.render.resolution_y,
             "res_pct": scene.render.resolution_percentage,
             "use_pass_z": view_layer.use_pass_z,
+            "film_transparent": scene.render.film_transparent,
             "camera": scene.camera,
         }
         self._saved_samples = _engine_samples(scene, capture.engine)
@@ -219,6 +225,11 @@ class DEPTHPEELXR_OT_capture(Operator):
         try:
             scene.render.engine = capture.engine
             view_layer.use_pass_z = True
+            # Film transparency so Combined.Alpha encodes per-pixel coverage.
+            # Without this, "miss" pixels (out-of-slab / no hit) take the
+            # world background colour with alpha=1, polluting downstream
+            # layer compositing and the flat-cutout preview.
+            scene.render.film_transparent = True
             # Resolution comes from the rig's `viewing_resolution` already
             # baked into scene.render via _apply_portal_render_resolution
             # (called by the rig's resync) — no extra mutation needed.
@@ -344,6 +355,7 @@ class DEPTHPEELXR_OT_capture(Operator):
         scene.render.resolution_y = self._saved["res_y"]
         scene.render.resolution_percentage = self._saved["res_pct"]
         view_layer.use_pass_z = self._saved["use_pass_z"]
+        scene.render.film_transparent = self._saved["film_transparent"]
         scene.camera = self._saved["camera"]
 
         if self._saved_samples is not None:
@@ -380,6 +392,7 @@ class DEPTHPEELXR_OT_cleanup_captures(Operator):
         if captures is None:
             self.report({"ERROR"}, "Project root unresolved")
             return {"CANCELLED"}
+        invalidate_flat_preview(context)
         if not captures.exists():
             self.report({"INFO"}, "No captures directory to clean")
             return {"FINISHED"}

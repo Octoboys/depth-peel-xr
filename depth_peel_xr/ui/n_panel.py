@@ -6,6 +6,7 @@ from bpy.types import Panel
 from .. import paths
 from ..operators.inspect import get_view_cameras_sorted
 from ..operators.portal_rig import CAM_PREFIX
+from ..operators.preview import expected_captures_present
 
 
 class DEPTHPEELXR_PT_main(Panel):
@@ -83,7 +84,7 @@ class DEPTHPEELXR_PT_main(Panel):
 
             lp = scene.dpx_layer_placement
             layers_box = layout.box()
-            layers_box.label(text="Layer Placement", icon="MOD_BUILD")
+            layers_box.label(text="Layer Placement", icon="MOD_ARRAY")
             col = layers_box.column(align=True)
             col.prop(lp, "strategy")
             row = col.row()
@@ -126,6 +127,31 @@ class DEPTHPEELXR_PT_main(Panel):
             col.operator(
                 "depthpeelxr.cleanup_captures",
                 text="Clean Up Captures",
+                icon="TRASH",
+            )
+
+            preview_box = layout.box()
+            preview_box.label(text="Reconstruction", icon="MOD_BUILD")
+            col = preview_box.column(align=True)
+            preview_ready = expected_captures_present(context)
+            if preview_ready:
+                col.label(text="Flat cutouts — centre view at layer.near")
+            elif n_layers and n_views:
+                col.label(text="Run capture to enable preview")
+            else:
+                col.label(text="Place layers to enable preview")
+            col.separator(factor=1.5)
+            preview_row = col.row(align=True)
+            preview_row.enabled = preview_ready
+            preview_row.operator(
+                "depthpeelxr.preview_flat",
+                text="Preview Flat Cutouts",
+                icon="MESH_PLANE",
+            )
+            col.separator()
+            col.operator(
+                "depthpeelxr.cleanup_preview",
+                text="Clean Up Geo",
                 icon="TRASH",
             )
 

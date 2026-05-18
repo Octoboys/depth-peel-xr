@@ -60,7 +60,7 @@ def ensure_collection(name: str) -> bpy.types.Collection:
     return coll
 
 
-def _link_unique(obj: Object, coll: bpy.types.Collection) -> None:
+def link_unique(obj: Object, coll: bpy.types.Collection) -> None:
     if obj.name not in coll.objects:
         coll.objects.link(obj)
 
@@ -105,7 +105,7 @@ def _build_portal(coll: bpy.types.Collection, width: float, height: float) -> Ob
     mesh = bpy.data.meshes.new(PORTAL_NAME)
     obj = bpy.data.objects.new(PORTAL_NAME, mesh)
     obj.show_wire = True
-    _link_unique(obj, coll)
+    link_unique(obj, coll)
     _set_portal_mesh_size(obj, width, height)
     return obj
 
@@ -116,7 +116,7 @@ def _build_anchor(coll: bpy.types.Collection, parent: Object, offset: float) -> 
         anchor = bpy.data.objects.new(ANCHOR_NAME, None)
         anchor.empty_display_type = 'PLAIN_AXES'
         anchor.empty_display_size = 0.2
-    _link_unique(anchor, coll)
+    link_unique(anchor, coll)
     anchor.parent = parent
     anchor.matrix_parent_inverse = Matrix.Identity(4)
     anchor.location = (0.0, offset, 0.0)
@@ -165,7 +165,7 @@ def _spawn_camera(
     if cam_obj is None or cam_obj.type != 'CAMERA':
         cam_data = bpy.data.cameras.new(name)
         cam_obj = bpy.data.objects.new(name, cam_data)
-    _link_unique(cam_obj, coll)
+    link_unique(cam_obj, coll)
     cam_obj.parent = anchor
     cam_obj.matrix_parent_inverse = Matrix.Identity(4)
     _configure_camera(cam_obj, cx, cz, ho, portal_w, portal_h)
@@ -232,7 +232,7 @@ def _build_or_resync_rig(context, *, create_portal_if_missing: bool) -> bool:
         props.portal_object = portal
     else:
         _set_portal_mesh_size(portal, portal_w, portal_h)
-    _link_unique(portal, coll)
+    link_unique(portal, coll)
 
     anchor = _build_anchor(coll, portal, props.headplane_offset)
 
@@ -299,6 +299,10 @@ class DEPTHPEELXR_OT_cleanup_portal_rig(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        from .preview import invalidate_flat_preview
+
+        invalidate_flat_preview(context)
+
         coll = bpy.data.collections.get(RIG_COLLECTION)
         if coll is not None:
             for obj in list(coll.objects):

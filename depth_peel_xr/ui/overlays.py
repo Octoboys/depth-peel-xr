@@ -4,12 +4,20 @@ N+1 layer-boundary planes when Phase 2 has placed layers.
 Drawn via a SpaceView3D POST_VIEW handler so the head-plane stays unselectable
 and adds zero datablocks to the scene. Reads PortalRigProps + Portal world
 transform each frame, so it tracks property and transform changes live.
+
+The boundary-plane gizmos draw if the DepthPeelXR_Source collection is
+visible (the conceptual home of the captured scene). Hiding Source via
+Toggle Source / Preview hides them as a side-effect; head-plane wireframe
++ grid dots keep drawing throughout.
 """
 
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
+
+from ..core.geometry import super_frustum_half_extents
+from ..operators.inspect import SOURCE_COLLECTION
 
 
 _HANDLE = None
@@ -22,20 +30,8 @@ _BOUNDARY_DEEPEST_COLOR = (1.0, 0.4, 0.7, 0.22)
 _BOUNDARY_DEEPEST_EDGE_COLOR = (0.22, 0.05, 0.12, 1.0)
 
 
-def _super_frustum_half_extents(d: float, half_w_p: float, half_h_p: float, ho: float):
-    """Half-width/half-height of the super-frustum cross-section at camera-
-    space depth `d`. At d <= ho all cameras frame the same portal rectangle;
-    past the portal the union grows linearly so each camera's off-axis
-    frustum is contained.
-    """
-    if ho <= 0.0 or d <= ho:
-        return half_w_p, half_h_p
-    scale = 2.0 * d / ho - 1.0
-    return half_w_p * scale, half_h_p * scale
-
-
 def _boundary_quad_corners(M, d: float, half_w_p: float, half_h_p: float, ho: float):
-    half_w, half_h = _super_frustum_half_extents(d, half_w_p, half_h_p, ho)
+    half_w, half_h = super_frustum_half_extents(d, half_w_p, half_h_p, ho)
     y = ho - d
     return [
         M @ Vector((-half_w, y, -half_h)),
@@ -51,6 +47,16 @@ def _boundary_depths(scene) -> list[float]:
         return []
     layers = list(lp.layers)
     return [layers[0].near] + [layer.far for layer in layers]
+
+
+def _source_collection_hidden() -> bool:
+    """Layer-boundary gizmos draw if the Source collection is visible
+    (the conceptual home of the scene the rig is capturing). When the
+    user toggles to Preview, Source is hidden and so are the gizmos.
+    No explicit Source collection yet → not hidden → gizmos draw.
+    """
+    coll = bpy.data.collections.get(SOURCE_COLLECTION)
+    return coll is not None and coll.hide_viewport
 
 
 def _draw():
@@ -97,7 +103,7 @@ def _draw():
     shader.bind()
 
     boundary_depths = _boundary_depths(scene)
-    if boundary_depths:
+    if boundary_depths and not _source_collection_hidden():
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("LESS_EQUAL")
         gpu.state.line_width_set(1.5)
