@@ -136,7 +136,7 @@ def _build_recon_mesh_object(
 
 class DEPTHPEELXR_OT_reconstruct_flat(Operator):
     bl_idname = "depthpeelxr.reconstruct_flat"
-    bl_label = "Build Flat Quadtree"
+    bl_label = "Build Quadtree Planes"
     bl_description = (
         "Per layer, adaptive quadtree drives silhouette-cut interior/border "
         "quads at the layer's near depth. No displacement — vertices stay "

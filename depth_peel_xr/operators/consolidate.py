@@ -21,6 +21,7 @@ from mathutils import Vector
 from .. import paths as paths_mod
 from ..core.multi_view import consolidate_layer
 from .inspect import get_view_cameras_sorted
+from .preview import invalidate_flat_preview
 
 
 _LOAD_IMAGE_PREFIX = "dpxr_consolidate_tmp_"
@@ -250,6 +251,11 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
         if captures is None or consolidated is None:
             self.report({"ERROR"}, "Project root unresolved")
             return {"CANCELLED"}
+
+        # Re-consolidation writes new canonical EXRs; any on-screen
+        # reconstruction was built from the previous canonical and is
+        # now stale.
+        invalidate_flat_preview(context)
 
         centre_idx = _centre_view_index(len(cams))
         sibling_order = _sibling_order_closest_first(cams, centre_idx)

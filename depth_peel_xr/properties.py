@@ -21,6 +21,18 @@ def _on_rig_param_change(self, context):
     invalidate_flat_preview(context)
 
 
+def _on_viewing_resolution_change(self, context):
+    """viewing_resolution only affects FUTURE captures (scene render
+    resolution); it doesn't invalidate existing captures, consolidated
+    outputs, or the on-screen reconstruction (which is built from
+    portal dimensions, not viewing_resolution). Resync the rig so
+    scene.render.resolution_x/y updates for the next capture, then
+    stop — no preview invalidation."""
+    from .operators.portal_rig import resync_rig_from_props
+
+    resync_rig_from_props(context)
+
+
 def _on_layer_param_change(self, context):
     from .operators.layer_placement import repopulate_layers_if_active
     from .operators.preview import invalidate_flat_preview
@@ -116,7 +128,7 @@ class PortalRigProps(PropertyGroup):
             ("4096", "4096 (max)", ""),
         ),
         default="1024",
-        update=_on_rig_param_change,
+        update=_on_viewing_resolution_change,
     )
 
 

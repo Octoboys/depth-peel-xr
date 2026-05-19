@@ -174,7 +174,7 @@ class DEPTHPEELXR_PT_main(Panel):
             quadtree_row.enabled = quadtree_ready
             quadtree_row.operator(
                 "depthpeelxr.reconstruct_flat",
-                text="Build Flat Quadtree",
+                text="Build Quadtree Planes",
                 icon="MOD_REMESH",
             )
             col.separator()
