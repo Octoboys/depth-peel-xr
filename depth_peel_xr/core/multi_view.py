@@ -1,22 +1,26 @@
 """Multi-view consolidation: reproject NxN per-layer captures into one
-canonical centre-NDC view per layer.
+canonical super-frustum-NDC view per layer.
 
 Pure numpy — no bpy. Tests run standalone.
 
 Pipeline per layer:
-  1. Centre view's RGBA + depth seeds the canonical buffer; anything with
-     `alpha > coverage_threshold` is taken as the authoritative pixel.
-  2. Sibling views are processed in order of head-plane distance to centre
-     (closest first). For each, we forward-splat (nearest-neighbour, with
-     z-buffer guarding) into centre NDC; pixels that the canonical buffer
-     doesn't yet cover get filled, marked source=sibling. Closest-to-centre
-     wins because we iterate sorted and skip already-covered pixels.
+  1. Views are processed in priority order (centre first, then siblings
+     closest-to-centre first). Each pixel above `COVERAGE_ALPHA_THRESHOLD`
+     forward-splats into canonical NDC via per-pixel unproject (source cam)
+     + reproject (canonical cam). Pixels that the canonical doesn't yet
+     cover get filled.
+  2. The canonical's virtual cam is a forward-shifted perspective that frames
+     the super-frustum exactly — see core.geometry.super_frustum_projection.
+     Centre-view pixels naturally land in a central region of the canonical
+     buffer; the surrounding annulus is filled by whichever sibling can see
+     it (geometrically nearest sibling wins because we iterate sorted).
 
 Outputs:
-  - canonical_rgba (H, W, 4) — centre + sibling fills, scene-linear.
-  - canonical_depth (H, W)   — distance from centre camera along -Z.
+  - canonical_rgba (H, W, 4) — scene-linear, alpha = coverage.
+  - canonical_depth (H, W)   — distance along the canonical cam's -Z axis.
   - coverage_mask (H, W) bool — True for any pixel a view contributed to.
-  - source_mask (H, W) uint8 — 0 = centre, 1..N = sibling index (for debug).
+  - source_mask (H, W) uint8 — index into the input views_sorted list (so
+    centre = 0 by convention when the caller puts it first).
 
 Coordinate conventions:
   - Camera-space: Blender's, camera looks down -Z, +Y up, +X right.
@@ -95,59 +99,59 @@ def _unproject_to_camera_space(
     return cam_point
 
 
-def reproject_view_to_centre(
-    sibling_rgba: np.ndarray,
-    sibling_depth: np.ndarray,
-    sib_world_from_cam: np.ndarray,
-    sib_proj: np.ndarray,
-    centre_cam_from_world: np.ndarray,
-    centre_proj: np.ndarray,
-    centre_shape: tuple[int, int],
+def reproject_view_to_canonical(
+    src_rgba: np.ndarray,
+    src_depth: np.ndarray,
+    src_world_from_cam: np.ndarray,
+    src_proj: np.ndarray,
+    canonical_cam_from_world: np.ndarray,
+    canonical_proj: np.ndarray,
+    canonical_shape: tuple[int, int],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Forward-splat sibling view's covered pixels into centre NDC.
+    """Forward-splat a source view's covered pixels into canonical NDC.
 
     Returns (contrib_rgba, contrib_depth, contrib_valid):
       - contrib_rgba (Hc, Wc, 4)
       - contrib_depth (Hc, Wc), inf where no contribution
       - contrib_valid (Hc, Wc) bool
 
-    Nearest-neighbour splat. Multiple sibling pixels landing in the same
-    centre pixel are resolved by z-buffer (closest wins inside the
-    sibling's own scatter). Pixels outside the centre frustum drop.
+    Nearest-neighbour splat. Multiple source pixels landing in the same
+    canonical pixel are resolved by z-buffer (closest wins inside the
+    source's own scatter). Pixels outside the canonical frustum drop.
     """
-    Hs, Ws, _ = sibling_rgba.shape
-    Hc, Wc = centre_shape
+    Hs, Ws, _ = src_rgba.shape
+    Hc, Wc = canonical_shape
 
     u_ndc_s, v_ndc_s = _ndc_grid(Ws, Hs)
     cam_pt_s = _unproject_to_camera_space(
-        u_ndc_s, v_ndc_s, sibling_depth, np.linalg.inv(sib_proj)
-    )  # (Hs, Ws, 3) in sibling cam space
+        u_ndc_s, v_ndc_s, src_depth, np.linalg.inv(src_proj)
+    )  # (Hs, Ws, 3) in source cam space
 
-    # Mask sibling pixels we should consider at all.
-    alpha = sibling_rgba[..., 3]
-    valid_src = (alpha > COVERAGE_ALPHA_THRESHOLD) & np.isfinite(sibling_depth) & (sibling_depth > 0)
+    # Mask source pixels we should consider at all.
+    alpha = src_rgba[..., 3]
+    valid_src = (alpha > COVERAGE_ALPHA_THRESHOLD) & np.isfinite(src_depth) & (src_depth > 0)
 
-    # Sibling cam → world → centre cam.
+    # Source cam → world → canonical cam.
     cam_pt_4d = np.concatenate(
         [cam_pt_s, np.ones((Hs, Ws, 1), dtype=cam_pt_s.dtype)], axis=-1
     )
-    world_pt = cam_pt_4d @ sib_world_from_cam.T  # (Hs, Ws, 4)
-    centre_cam_pt = world_pt @ centre_cam_from_world.T  # (Hs, Ws, 4)
+    world_pt = cam_pt_4d @ src_world_from_cam.T  # (Hs, Ws, 4)
+    canonical_cam_pt = world_pt @ canonical_cam_from_world.T  # (Hs, Ws, 4)
 
-    # Project to centre NDC.
-    centre_clip = centre_cam_pt @ centre_proj.T  # (Hs, Ws, 4)
-    w = centre_clip[..., 3]
+    # Project to canonical NDC.
+    canonical_clip = canonical_cam_pt @ canonical_proj.T  # (Hs, Ws, 4)
+    w = canonical_clip[..., 3]
     w_safe = w != 0
-    centre_ndc = np.where(
+    canonical_ndc = np.where(
         w_safe[..., None],
-        centre_clip / np.where(w_safe[..., None], centre_clip[..., 3:4], 1.0),
+        canonical_clip / np.where(w_safe[..., None], canonical_clip[..., 3:4], 1.0),
         0.0,
     )
 
-    # NDC → centre pixel.
-    u_c = (centre_ndc[..., 0] + 1.0) * 0.5 * Wc
-    v_c = (1.0 - centre_ndc[..., 1]) * 0.5 * Hc
-    d_c = -centre_cam_pt[..., 2]  # positive distance from centre camera
+    # NDC → canonical pixel.
+    u_c = (canonical_ndc[..., 0] + 1.0) * 0.5 * Wc
+    v_c = (1.0 - canonical_ndc[..., 1]) * 0.5 * Hc
+    d_c = -canonical_cam_pt[..., 2]  # positive distance from canonical apex
 
     in_frustum = (
         valid_src
@@ -167,76 +171,75 @@ def reproject_view_to_centre(
             np.zeros((Hc, Wc), dtype=bool),
         )
 
-    src_rgba = sibling_rgba.reshape(-1, 4)[flat_idx]
-    src_depth = d_c.ravel()[flat_idx]
+    src_rgba_flat = src_rgba.reshape(-1, 4)[flat_idx]
+    src_depth_c = d_c.ravel()[flat_idx]
     src_u = np.clip(np.floor(u_c.ravel()[flat_idx]).astype(np.int64), 0, Wc - 1)
     src_v = np.clip(np.floor(v_c.ravel()[flat_idx]).astype(np.int64), 0, Hc - 1)
 
-    # z-buffer splat: keep the closest contribution per centre pixel.
+    # z-buffer splat: keep the closest contribution per canonical pixel.
     contrib_depth = np.full((Hc, Wc), np.inf, dtype=np.float32)
     contrib_rgba = np.zeros((Hc, Wc, 4), dtype=np.float32)
     contrib_valid = np.zeros((Hc, Wc), dtype=bool)
 
     # Sort sources by depth descending so later writes (closer) overwrite.
-    order = np.argsort(-src_depth, kind="stable")
+    order = np.argsort(-src_depth_c, kind="stable")
     src_u = src_u[order]
     src_v = src_v[order]
-    src_depth = src_depth[order]
-    src_rgba = src_rgba[order]
+    src_depth_c = src_depth_c[order]
+    src_rgba_flat = src_rgba_flat[order]
 
-    contrib_depth[src_v, src_u] = src_depth
-    contrib_rgba[src_v, src_u] = src_rgba
+    contrib_depth[src_v, src_u] = src_depth_c
+    contrib_rgba[src_v, src_u] = src_rgba_flat
     contrib_valid[src_v, src_u] = True
 
     return contrib_rgba, contrib_depth, contrib_valid
 
 
 def consolidate_layer(
-    centre_rgba: np.ndarray,
-    centre_depth: np.ndarray,
-    siblings_sorted: list[dict],
-    centre_world_from_cam: np.ndarray,
-    centre_proj: np.ndarray,
+    views_sorted: list[dict],
+    canonical_shape: tuple[int, int],
+    canonical_cam_from_world: np.ndarray,
+    canonical_proj: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Consolidate one layer's centre + sibling captures into canonical
-    centre-NDC buffers. Siblings must already be sorted closest-to-centre
-    first.
+    """Consolidate one layer's views into super-frustum canonical buffers.
 
-    Each sibling dict:
+    Views are processed in the order given. The caller's convention is
+    centre first, then siblings sorted closest-to-centre first — so the
+    centre view's pixels seed the canonical's central region and each
+    annulus pixel goes to the sibling geometrically nearest the position
+    from which it's visible.
+
+    Each view dict:
       { 'rgba': (H, W, 4), 'depth': (H, W),
         'world_from_cam': (4, 4), 'proj': (4, 4) }
 
-    Returns (rgba, depth, coverage_mask, source_mask).
+    Returns (rgba, depth, coverage_mask, source_mask). `source_mask[y, x]`
+    is the index into views_sorted that filled that pixel (only meaningful
+    where coverage_mask is True; 0 elsewhere).
     """
-    H, W, _ = centre_rgba.shape
-    canonical_rgba = centre_rgba.astype(np.float32, copy=True)
-    canonical_depth = centre_depth.astype(np.float32, copy=True)
+    Hc, Wc = canonical_shape
+    canonical_rgba = np.zeros((Hc, Wc, 4), dtype=np.float32)
+    canonical_depth = np.zeros((Hc, Wc), dtype=np.float32)
+    coverage_mask = np.zeros((Hc, Wc), dtype=bool)
+    source_mask = np.zeros((Hc, Wc), dtype=np.uint8)
 
-    coverage_mask = canonical_rgba[..., 3] > COVERAGE_ALPHA_THRESHOLD
-    source_mask = np.zeros((H, W), dtype=np.uint8)
-
-    centre_cam_from_world = np.linalg.inv(centre_world_from_cam)
-
-    for sib_idx, sib in enumerate(siblings_sorted, start=1):
-        contrib_rgba, contrib_depth, contrib_valid = reproject_view_to_centre(
-            sib["rgba"],
-            sib["depth"],
-            sib["world_from_cam"],
-            sib["proj"],
-            centre_cam_from_world,
-            centre_proj,
-            centre_shape=(H, W),
+    for view_idx, view in enumerate(views_sorted):
+        contrib_rgba, contrib_depth, contrib_valid = reproject_view_to_canonical(
+            view["rgba"],
+            view["depth"],
+            view["world_from_cam"],
+            view["proj"],
+            canonical_cam_from_world,
+            canonical_proj,
+            canonical_shape=(Hc, Wc),
         )
         fill = (~coverage_mask) & contrib_valid
         canonical_rgba[fill] = contrib_rgba[fill]
         canonical_depth[fill] = contrib_depth[fill]
-        source_mask[fill] = sib_idx
+        source_mask[fill] = view_idx
         coverage_mask |= fill
 
-    # Where no view contributed, depth stays at whatever centre_depth held
-    # (might be the background sentinel); set to 0 for cleanliness.
-    canonical_depth = np.where(coverage_mask, canonical_depth, 0.0)
-    # Same for RGBA's alpha — force to 0 where uncovered.
+    # Force alpha=0 where uncovered for downstream coverage reads.
     canonical_rgba[..., 3] = np.where(coverage_mask, canonical_rgba[..., 3], 0.0)
 
     return canonical_rgba, canonical_depth, coverage_mask, source_mask

@@ -1,14 +1,17 @@
 """Phase 4 slice 1: flat-quadtree reconstruction.
 
-Consumes the consolidated centre-NDC outputs (`consolidated/layer_NN_color.exr`):
-derives coverage from the canonical alpha, runs the adaptive quadtree,
-emits a per-layer mesh whose vertices are coplanar at `layer.near`. No
-displacement (that lands in Phase 4 slice 2).
+Consumes the consolidated super-frustum-NDC outputs
+(`consolidated/layer_NN_color.exr`): derives coverage from the canonical
+alpha, runs the adaptive quadtree, emits a per-layer mesh whose vertices
+are coplanar at `layer.near`. No displacement (that lands in Phase 4 slice
+2).
 
-Cheapest *shippable* reconstruction — silhouette-cut interior/border
-quads, alpha-clip emission material. Mutually exclusive with Build
-Simple Planes; both live in `DepthPeelXR_Preview` and are wiped by the
-shared `Clean Up Geo` operator.
+Each layer's plane is sized to the super-frustum cross-section at
+`layer.near` so the canonical pixel grid maps 1:1 onto it — off-centre XR
+viewers see no angular gap along the portal interior. Cheapest *shippable*
+reconstruction — silhouette-cut interior/border quads, alpha-clip emission
+material. Mutually exclusive with Build Simple Planes; both live in
+`DepthPeelXR_Preview` and are wiped by the shared `Clean Up Geo` operator.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from bpy.types import Operator
 from mathutils import Matrix
 
 from .. import paths as paths_mod
-from ..core.geometry import centre_frustum_half_extents
+from ..core.geometry import super_frustum_half_extents
 from ..core.quadtree import build_quadtree
 from ..core.reconstruction import build_layer_mesh
 from .inspect import PREVIEW_COLLECTION, SOURCE_COLLECTION
@@ -137,11 +140,7 @@ def _build_recon_mesh_object(
 class DEPTHPEELXR_OT_reconstruct_flat(Operator):
     bl_idname = "depthpeelxr.reconstruct_flat"
     bl_label = "Build Quadtree Planes"
-    bl_description = (
-        "Per layer, adaptive quadtree drives silhouette-cut interior/border "
-        "quads at the layer's near depth. No displacement — vertices stay "
-        "coplanar. Cheapest shippable reconstruction tier."
-    )
+    bl_description = "Build per-layer adaptive-quadtree planes with silhouette-cut borders (no displacement)"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -200,14 +199,14 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
                 continue  # nothing covered in this layer
 
             d = layer.near
-            half_w_cf, half_h_cf = centre_frustum_half_extents(
+            half_w_plane, half_h_plane = super_frustum_half_extents(
                 d, half_w_p, half_h_p, ho
             )
             mesh_arrays = build_layer_mesh(
                 leaves=leaves,
                 image_width=W, image_height=H,
-                half_w_centre_frustum=half_w_cf,
-                half_h_centre_frustum=half_h_cf,
+                half_w_plane=half_w_plane,
+                half_h_plane=half_h_plane,
                 headplane_offset=ho,
                 layer_near=d,
             )

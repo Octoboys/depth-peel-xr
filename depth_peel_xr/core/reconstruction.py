@@ -46,16 +46,18 @@ def build_layer_mesh(
     leaves: Sequence[QuadtreeLeaf],
     image_width: int,
     image_height: int,
-    half_w_centre_frustum: float,
-    half_h_centre_frustum: float,
+    half_w_plane: float,
+    half_h_plane: float,
     headplane_offset: float,
     layer_near: float,
 ) -> LayerMesh:
     """Emit mesh arrays for a single layer.
 
-    `half_w_centre_frustum` / `half_h_centre_frustum` are the centre
-    camera's frustum half-extents at `layer_near` depth — same values
-    `centre_frustum_half_extents` in core.geometry computes.
+    `half_w_plane` / `half_h_plane` are the world-space half-extents of the
+    reconstructed plane at `layer_near` depth. Slice 1 sizes the plane to
+    the super-frustum cross-section at that depth (see
+    `super_frustum_half_extents` in core.geometry) — wide enough that off-
+    centre XR viewers see no angular gap along the portal interior.
     """
     n_leaves = len(leaves)
     if n_leaves == 0:
@@ -83,8 +85,8 @@ def build_layer_mesh(
         corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
         for ci, (px, py) in enumerate(corners):
             # Pixel → portal-local. Image right = portal -X; image top = portal +Z.
-            wx = half_w_centre_frustum * (1.0 - 2.0 * px * inv_w)
-            wz = half_h_centre_frustum * (1.0 - 2.0 * py * inv_h)
+            wx = half_w_plane * (1.0 - 2.0 * px * inv_w)
+            wz = half_h_plane * (1.0 - 2.0 * py * inv_h)
             vi = fi * 4 + ci
             vertices[vi] = (wx, y_local, wz)
             faces[fi, ci] = vi

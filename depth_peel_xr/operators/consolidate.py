@@ -1,12 +1,21 @@
 """Multi-view consolidation: post-capture pass that fuses each layer's
-NxN views into a canonical centre-NDC RGBA + depth + source-mask.
+NxN views into a canonical super-frustum-NDC RGBA + depth + source-mask.
 
-Phase 3 slice 2. Reads the per-view multilayer EXRs written by
-`DEPTHPEELXR_OT_capture`, reprojects sibling views into the centre
-camera's NDC (closest-to-centre wins for overlap), writes one set of
-canonical outputs per layer under `<project>/captures/consolidated/`.
+Phase 3 slice 3. Reads the per-view flat EXRs written by
+`DEPTHPEELXR_OT_capture`, reprojects every view (centre + siblings) into a
+virtual super-frustum perspective camera that exactly frames the union of
+all rig cameras' frustums, and writes one set of canonical outputs per
+layer under `<project>/captures/consolidated/`.
 
-Consumed downstream by Phase 4's reconstruction operators.
+The canonical's pixel grid grows per layer with the super/centre frustum-
+half-extent ratio at `layer.near` — deeper layers get bigger canonicals,
+capped at 2× centre as layer.near → ∞. Centre-view pixels seed the central
+region; the surrounding annulus is filled by whichever sibling sees it
+(closest-to-centre wins for sibling overlap).
+
+Consumed downstream by Phase 4's reconstruction operators, which size
+their per-layer planes to `super_frustum_half_extents(layer.near)` so the
+canonical pixel grid maps 1:1 onto the reconstructed plane.
 """
 
 from __future__ import annotations
@@ -19,6 +28,10 @@ from bpy.types import Operator
 from mathutils import Vector
 
 from .. import paths as paths_mod
+from ..core.geometry import (
+    super_frustum_canonical_shape,
+    super_frustum_projection,
+)
 from ..core.multi_view import consolidate_layer
 from .inspect import get_view_cameras_sorted
 from .preview import invalidate_flat_preview
@@ -219,11 +232,7 @@ def _save_flat_exr(path: Path, rgba: np.ndarray) -> None:
 class DEPTHPEELXR_OT_consolidate_views(Operator):
     bl_idname = "depthpeelxr.consolidate_views"
     bl_label = "Consolidate Views"
-    bl_description = (
-        "Per layer, reproject NxN sibling views into the centre camera's "
-        "NDC and write canonical RGBA + depth + source-mask EXRs under "
-        "captures/consolidated/. Closest-to-centre wins for sibling overlap."
-    )
+    bl_description = "Fuse the per-view captures of each layer into one canonical RGBA + depth + source-mask"
     bl_options = {"REGISTER"}
 
     @classmethod
@@ -240,6 +249,7 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
 
     def execute(self, context):
         scene = context.scene
+        rig = scene.dpx_portal_rig
         lp = scene.dpx_layer_placement
         cams = get_view_cameras_sorted()
         if not cams:
@@ -265,24 +275,50 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
         pixel_aspect_x = scene.render.pixel_aspect_x
         pixel_aspect_y = scene.render.pixel_aspect_y
 
+        ho = rig.headplane_offset
+        half_w_p = rig.portal_width * 0.5
+        half_h_p = rig.portal_height * 0.5
+
+        # Canonical's virtual cam is fixed by the rig (portal extents + ho);
+        # only the buffer shape varies per layer.
+        canonical_from_centre, canonical_proj = super_frustum_projection(
+            half_w_p, half_h_p, ho
+        )
         centre_cam = cams[centre_idx]
         centre_world_from_cam, centre_proj = _camera_matrices(
             centre_cam, render_x, render_y, pixel_aspect_x, pixel_aspect_y
         )
+        canonical_cam_from_world = (
+            canonical_from_centre @ np.linalg.inv(centre_world_from_cam)
+        )
+
+        # Sibling rig cameras don't change between layers either.
+        sibling_matrices: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        for sib_idx in sibling_order:
+            sibling_matrices[sib_idx] = _camera_matrices(
+                cams[sib_idx], render_x, render_y, pixel_aspect_x, pixel_aspect_y
+            )
 
         written = 0
-        for li in range(len(lp.layers)):
+        for li, layer in enumerate(lp.layers):
             centre_color = _color_path(captures, li, centre_idx)
             if not centre_color.exists():
                 self.report({"WARNING"}, f"Layer {li}: centre EXR missing, skipped")
                 continue
             try:
-                centre_rgba, centre_depth, _, _ = _load_view_passes(captures, li, centre_idx)
+                centre_rgba, centre_depth, centre_W, centre_H = _load_view_passes(
+                    captures, li, centre_idx
+                )
             except Exception as exc:
                 self.report({"ERROR"}, f"Layer {li}: failed to read centre EXR: {exc}")
                 return {"CANCELLED"}
 
-            siblings_sorted = []
+            views_sorted = [{
+                "rgba": centre_rgba,
+                "depth": centre_depth,
+                "world_from_cam": centre_world_from_cam,
+                "proj": centre_proj,
+            }]
             for sib_idx in sibling_order:
                 sib_color = _color_path(captures, li, sib_idx)
                 if not sib_color.exists():
@@ -292,22 +328,23 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
                 except Exception as exc:
                     self.report({"WARNING"}, f"Layer {li} view {sib_idx}: read failed: {exc}")
                     continue
-                sib_world_from_cam, sib_proj = _camera_matrices(
-                    cams[sib_idx], render_x, render_y, pixel_aspect_x, pixel_aspect_y
-                )
-                siblings_sorted.append({
+                sib_world_from_cam, sib_proj = sibling_matrices[sib_idx]
+                views_sorted.append({
                     "rgba": sib_rgba,
                     "depth": sib_depth,
                     "world_from_cam": sib_world_from_cam,
                     "proj": sib_proj,
                 })
 
+            canonical_W, canonical_H = super_frustum_canonical_shape(
+                layer.near, centre_W, centre_H, half_w_p, half_h_p, ho
+            )
+
             rgba, depth, _coverage, source = consolidate_layer(
-                centre_rgba=centre_rgba,
-                centre_depth=centre_depth,
-                siblings_sorted=siblings_sorted,
-                centre_world_from_cam=centre_world_from_cam,
-                centre_proj=centre_proj,
+                views_sorted=views_sorted,
+                canonical_shape=(canonical_H, canonical_W),
+                canonical_cam_from_world=canonical_cam_from_world,
+                canonical_proj=canonical_proj,
             )
 
             try:

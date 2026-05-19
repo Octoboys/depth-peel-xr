@@ -13,7 +13,7 @@ def test_empty_leaf_list_returns_empty_arrays():
     mesh = build_layer_mesh(
         leaves=[],
         image_width=64, image_height=64,
-        half_w_centre_frustum=2.0, half_h_centre_frustum=1.0,
+        half_w_plane=2.0, half_h_plane=1.0,
         headplane_offset=1.5, layer_near=3.5,
     )
     assert mesh.vertices.shape == (0, 3)
@@ -21,13 +21,13 @@ def test_empty_leaf_list_returns_empty_arrays():
     assert mesh.uvs.shape == (0, 4, 2)
 
 
-def test_single_full_image_leaf_spans_centre_frustum():
+def test_single_full_image_leaf_spans_plane():
     # One interior leaf covering the whole 64x64 image.
     leaves = [QuadtreeLeaf(0, 0, 64, 64, "interior")]
     mesh = build_layer_mesh(
         leaves=leaves,
         image_width=64, image_height=64,
-        half_w_centre_frustum=2.0, half_h_centre_frustum=1.0,
+        half_w_plane=2.0, half_h_plane=1.0,
         headplane_offset=1.5, layer_near=3.5,
     )
     assert mesh.vertices.shape == (4, 3)
@@ -63,7 +63,7 @@ def test_non_shared_vertices_per_leaf():
     mesh = build_layer_mesh(
         leaves=leaves,
         image_width=64, image_height=64,
-        half_w_centre_frustum=1.0, half_h_centre_frustum=1.0,
+        half_w_plane=1.0, half_h_plane=1.0,
         headplane_offset=1.5, layer_near=3.5,
     )
     assert mesh.vertices.shape == (8, 3)
@@ -81,7 +81,7 @@ def test_face_class_preserved_from_leaf():
     mesh = build_layer_mesh(
         leaves=leaves,
         image_width=64, image_height=64,
-        half_w_centre_frustum=1.0, half_h_centre_frustum=1.0,
+        half_w_plane=1.0, half_h_plane=1.0,
         headplane_offset=1.5, layer_near=3.5,
     )
     assert list(mesh.face_classes) == ["interior", "border"]
@@ -93,7 +93,7 @@ def test_face_winding_normal_points_minus_y():
     mesh = build_layer_mesh(
         leaves=leaves,
         image_width=64, image_height=64,
-        half_w_centre_frustum=2.0, half_h_centre_frustum=1.0,
+        half_w_plane=2.0, half_h_plane=1.0,
         headplane_offset=1.5, layer_near=3.5,
     )
     v0, v1, v3 = mesh.vertices[0], mesh.vertices[1], mesh.vertices[3]
