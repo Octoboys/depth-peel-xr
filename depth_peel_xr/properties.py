@@ -110,11 +110,10 @@ class PortalRigProps(PropertyGroup):
             "quadtree subdivisions cleanly aligned"
         ),
         items=(
-            ("256", "256 px", "Fast iteration"),
-            ("512", "512 px", "Medium"),
-            ("1024", "1024 px", "Default"),
-            ("2048", "2048 px", "High"),
-            ("4096", "4096 px", "Max — large memory / disk use"),
+            ("512", "512 (low)", ""),
+            ("1024", "1024 (default)", ""),
+            ("2048", "2048 (high)", ""),
+            ("4096", "4096 (max)", ""),
         ),
         default="1024",
         update=_on_rig_param_change,
@@ -200,18 +199,92 @@ class CaptureProps(PropertyGroup):
     )
 
 
+def _snap_to_pow2(value: int) -> int:
+    """Round to the nearest power of 2 (>= 1). Used by the reconstruction
+    quad-size sliders so values like 7 / 9 / 100 snap to 8 / 8 / 128."""
+    if value < 1:
+        return 1
+    lower = 1 << (value.bit_length() - 1)
+    upper = lower << 1
+    return upper if (upper - value) < (value - lower) else lower
+
+
+def _next_pow2(value: int) -> int:
+    """Smallest power of 2 strictly greater than `value`."""
+    if value < 1:
+        return 1
+    return 1 << value.bit_length()
+
+
+def _prev_pow2(value: int) -> int:
+    """Largest power of 2 strictly less than `value` (>= 1)."""
+    if value <= 1:
+        return 1
+    if value & (value - 1) == 0:  # value is itself a power of 2
+        return value >> 1
+    return 1 << (value.bit_length() - 1)
+
+
+# Per-prop last-value cache so update callbacks can detect ±1 deltas
+# (slider increment arrows) vs. arbitrary jumps (drag / typed value).
+# Single-scene assumption; multi-scene users see at most one off-by-one snap.
+_last_quad_size = {"min": 8, "max": 128}
+
+
+def _on_quad_size_change(prop_name: str, attr: str, value: int) -> int:
+    """Map raw input to the snapped value. ±1 deltas (arrow clicks) step
+    to next/prev power of 2; everything else snaps to nearest."""
+    old = _last_quad_size[prop_name]
+    if value == old:
+        return value
+    if abs(value - old) == 1:
+        return _next_pow2(old) if value > old else _prev_pow2(old)
+    return _snap_to_pow2(value)
+
+
+def _on_min_quad_size_change(self, context):
+    snapped = _on_quad_size_change("min", "min_quad_size", self.min_quad_size)
+    if snapped != self.min_quad_size:
+        self.min_quad_size = snapped  # idempotent re-entry, no recursion
+    _last_quad_size["min"] = self.min_quad_size
+
+
+def _on_max_quad_size_change(self, context):
+    snapped = _on_quad_size_change("max", "max_quad_size", self.max_quad_size)
+    if snapped != self.max_quad_size:
+        self.max_quad_size = snapped
+    _last_quad_size["max"] = self.max_quad_size
+
+
 class ReconstructionProps(PropertyGroup):
+    max_quad_size: IntProperty(
+        name="Max Quad Size",
+        description=(
+            "Largest quadtree leaf size in canonical-image pixels (snaps "
+            "to nearest power of 2). The canonical is divided into MxM "
+            "square tiles before quadtree subdivision runs within each — "
+            "keeps leaves square and caps interior coalescing at this "
+            "ceiling"
+        ),
+        default=128,
+        min=8,
+        soft_max=512,
+        subtype="PIXEL",
+        update=_on_max_quad_size_change,
+    )
     min_quad_size: IntProperty(
         name="Min Quad Size",
         description=(
-            "Smallest quadtree leaf size in canonical-image pixels. "
-            "Border quads stop subdividing at this floor; smaller values "
-            "give finer silhouettes at the cost of more polygons"
+            "Smallest quadtree leaf size in canonical-image pixels "
+            "(snaps to nearest power of 2). Border quads stop "
+            "subdividing at this floor; smaller values give finer "
+            "silhouettes at the cost of more polygons"
         ),
         default=8,
         min=1,
         soft_max=64,
         subtype="PIXEL",
+        update=_on_min_quad_size_change,
     )
 
 

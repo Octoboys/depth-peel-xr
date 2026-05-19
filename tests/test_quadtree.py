@@ -14,18 +14,35 @@ def test_empty_mask_produces_no_leaves():
     assert leaves == []
 
 
-def test_fully_covered_produces_single_interior_leaf_at_root_scale():
+def test_fully_covered_produces_tile_grid_of_interior_leaves():
+    """Top-level tile loop divides the canonical into TxT squares before
+    the 4-way subdivision runs. A fully-covered 64x64 mask with
+    tile_size=32 should produce a 2x2 grid of 32x32 interior leaves."""
     mask = np.ones((64, 64), dtype=bool)
-    leaves = build_quadtree(mask, min_quad_size=4)
+    leaves = build_quadtree(mask, min_quad_size=4, tile_size=32)
+    assert len(leaves) == 4
+    interior_regions = {(l.x, l.y, l.w, l.h) for l in leaves if l.cls == "interior"}
+    assert interior_regions == {
+        (0, 0, 32, 32), (32, 0, 32, 32),
+        (0, 32, 32, 32), (32, 32, 32, 32),
+    }
+
+
+def test_tile_size_equal_to_image_size_acts_as_single_root():
+    """When tile_size >= image dimensions, the whole image is one tile."""
+    mask = np.ones((64, 64), dtype=bool)
+    leaves = build_quadtree(mask, min_quad_size=4, tile_size=128)
     assert len(leaves) == 1
     assert leaves[0] == QuadtreeLeaf(0, 0, 64, 64, "interior")
 
 
 def test_silhouette_subdivides_to_min_quad_size_at_border_only():
     # Left half covered, right half empty — vertical silhouette down the middle.
+    # tile_size = 64 = image width → single root; behaves like the
+    # pre-tile-grid implementation.
     mask = np.zeros((64, 64), dtype=bool)
     mask[:, :32] = True
-    leaves = build_quadtree(mask, min_quad_size=4)
+    leaves = build_quadtree(mask, min_quad_size=4, tile_size=64)
 
     interiors = [l for l in leaves if l.cls == "interior"]
     borders = [l for l in leaves if l.cls == "border"]
@@ -36,6 +53,19 @@ def test_silhouette_subdivides_to_min_quad_size_at_border_only():
     assert len(interiors) == 2
     interior_regions = {(l.x, l.y, l.w, l.h) for l in interiors}
     assert interior_regions == {(0, 0, 32, 32), (0, 32, 32, 32)}
+
+
+def test_edge_tiles_when_image_not_multiple_of_tile_size():
+    """Bottom/right edge tiles get the remainder when W or H isn't a
+    multiple of tile_size — rectangular at the periphery."""
+    mask = np.ones((50, 70), dtype=bool)  # not a multiple of 32
+    leaves = build_quadtree(mask, min_quad_size=4, tile_size=32)
+    # Tiles: x=[0,32,64], y=[0,32]. Widths 32, 32, 6; heights 32, 18.
+    expected = {
+        (0, 0, 32, 32), (32, 0, 32, 32), (64, 0, 6, 32),
+        (0, 32, 32, 18), (32, 32, 32, 18), (64, 32, 6, 18),
+    }
+    assert {(l.x, l.y, l.w, l.h) for l in leaves} == expected
 
 
 def test_off_grid_silhouette_produces_min_size_border_quads():
@@ -89,6 +119,11 @@ def test_leaves_tile_their_class_regions_without_gaps_or_overlap():
 def test_min_quad_size_floor_validated():
     with pytest.raises(ValueError):
         build_quadtree(np.ones((8, 8), dtype=bool), min_quad_size=0)
+
+
+def test_tile_size_below_min_quad_size_rejected():
+    with pytest.raises(ValueError):
+        build_quadtree(np.ones((8, 8), dtype=bool), min_quad_size=8, tile_size=4)
 
 
 def test_rejects_non_2d_mask():

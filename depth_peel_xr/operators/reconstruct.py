@@ -164,6 +164,7 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
         recon_props = scene.dpx_reconstruction
         portal = rig.portal_object
         min_quad_size = int(recon_props.min_quad_size)
+        max_quad_size = int(recon_props.max_quad_size)
 
         consolidated = _consolidated_dir(context)
 
@@ -190,7 +191,11 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
                 return {"CANCELLED"}
 
             coverage_mask = rgba[..., 3] > _COVERAGE_THRESHOLD
-            leaves = build_quadtree(coverage_mask, min_quad_size=min_quad_size)
+            leaves = build_quadtree(
+                coverage_mask,
+                min_quad_size=min_quad_size,
+                tile_size=max_quad_size,
+            )
             if not leaves:
                 continue  # nothing covered in this layer
 

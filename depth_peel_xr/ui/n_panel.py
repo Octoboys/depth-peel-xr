@@ -33,7 +33,12 @@ class DEPTHPEELXR_PT_main(Panel):
             col.prop(props, "portal_height")
             col.prop(props, "headplane_offset")
             col.prop(props, "grid_n")
-            col.prop(props, "viewing_resolution")
+            # Narrower split on viewing_resolution so the EnumProperty
+            # popup width (which tracks the chip's width) doesn't extend
+            # past the property label area.
+            vr_split = col.split(factor=0.5, align=True)
+            vr_split.label(text="Viewing Resolution")
+            vr_split.prop(props, "viewing_resolution", text="")
             col.separator(factor=1.5)
             col.operator(
                 "depthpeelxr.cleanup_portal_rig",
@@ -144,6 +149,7 @@ class DEPTHPEELXR_PT_main(Panel):
             col = preview_box.column(align=True)
             recon = scene.dpx_reconstruction
             col.prop(recon, "min_quad_size")
+            col.prop(recon, "max_quad_size")
             simple_ready = expected_captures_present(context)
             quadtree_ready = consolidated_present(context)
             col.separator()
