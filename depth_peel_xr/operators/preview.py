@@ -184,11 +184,7 @@ def invalidate_flat_preview(context) -> None:
 class DEPTHPEELXR_OT_preview_flat(Operator):
     bl_idname = "depthpeelxr.preview_flat"
     bl_label = "Build Simple Planes"
-    bl_description = (
-        "Build a flat alpha-cut plane per layer at its near depth, textured "
-        "from the centre-view capture. Cheapest reconstruction tier — no "
-        "silhouette subdivision, no displacement."
-    )
+    bl_description = "Build one flat alpha-cut plane per layer from the centre-view capture (no silhouette subdivision)"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -261,7 +257,7 @@ class DEPTHPEELXR_OT_preview_flat(Operator):
 class DEPTHPEELXR_OT_cleanup_preview(Operator):
     bl_idname = "depthpeelxr.cleanup_preview"
     bl_label = "Clean Up Geo"
-    bl_description = "Remove all reconstruction geometry (preview planes and any associated meshes, materials, images)"
+    bl_description = "Remove all reconstruction geometry"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

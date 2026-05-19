@@ -371,10 +371,7 @@ class DEPTHPEELXR_OT_cleanup_layers(Operator):
 class DEPTHPEELXR_OT_auto_fit_depth_scope(Operator):
     bl_idname = "depthpeelxr.auto_fit_depth_scope"
     bl_label = "Auto-fit Depth Scope"
-    bl_description = (
-        "Render a wide-open depth probe and snap min_depth / max_depth to "
-        "the actual scene-content extents past the Portal"
-    )
+    bl_description = "Snap min_depth / max_depth to the actual scene-content extents past the Portal"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

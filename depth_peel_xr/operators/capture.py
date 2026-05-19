@@ -187,10 +187,7 @@ def _captures_have_layout_orphans(captures: Path, n_layers: int, n_views: int) -
 class DEPTHPEELXR_OT_capture(Operator):
     bl_idname = "depthpeelxr.capture"
     bl_label = "Run Capture"
-    bl_description = (
-        "Render every rig camera × every placed layer to a (color, depth) "
-        "OpenEXR pair. Modal — ESC cancels at the next view boundary."
-    )
+    bl_description = "Render every rig camera × every placed layer to a (color, depth) EXR pair (ESC to cancel)"
     bl_options = {"REGISTER"}
 
     @classmethod
@@ -438,7 +435,7 @@ def _restore_state(scene, view_layer, saved, saved_samples, saved_tree, saved_ca
 class DEPTHPEELXR_OT_cleanup_captures(Operator):
     bl_idname = "depthpeelxr.cleanup_captures"
     bl_label = "Clean Up Captures"
-    bl_description = "Delete the captures subfolder under the project root"
+    bl_description = "Delete the captures subfolder"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

@@ -79,11 +79,7 @@ class PortalRigProps(PropertyGroup):
     )
     max_depth: FloatProperty(
         name="Max Depth",
-        description=(
-            "Maximum scene depth (metres past the Portal) the rig captures. "
-            "Layer placement subdivides [headplane_offset + min_depth, "
-            "headplane_offset + max_depth]"
-        ),
+        description="Maximum scene depth past the Portal that the rig captures (metres)",
         default=20.0,
         min=0.01,
         soft_max=200.0,
@@ -93,11 +89,7 @@ class PortalRigProps(PropertyGroup):
     )
     min_depth: FloatProperty(
         name="Min Depth",
-        description=(
-            "Offset of the first layer past the Portal, in metres. Push back "
-            "the near boundary to skip empty space between the Portal and the "
-            "first scene content"
-        ),
+        description="Skip empty space between the Portal and the first scene content (metres)",
         default=0.0,
         min=0.0,
         soft_max=50.0,
@@ -115,12 +107,7 @@ class PortalRigProps(PropertyGroup):
     )
     viewing_resolution: EnumProperty(
         name="Viewing Resolution",
-        description=(
-            "Render resolution along the portal's longer axis (the other "
-            "dimension is derived from the portal's aspect ratio). "
-            "Power-of-2 only — keeps the canonical canvas dimensions and "
-            "quadtree subdivisions cleanly aligned"
-        ),
+        description="Render resolution along the portal's longer axis (other dimension follows portal aspect)",
         items=(
             ("512", "512 (low)", ""),
             ("1024", "1024 (default)", ""),
@@ -205,7 +192,7 @@ _CAPTURE_ENGINE_ITEMS = (
 class CaptureProps(PropertyGroup):
     engine: EnumProperty(
         name="Engine",
-        description="Render engine for the per-layer multi-view capture",
+        description="Render engine used for capture",
         items=_CAPTURE_ENGINE_ITEMS,
         default="BLENDER_EEVEE",
     )
@@ -271,13 +258,7 @@ def _on_max_quad_size_change(self, context):
 class ReconstructionProps(PropertyGroup):
     max_quad_size: IntProperty(
         name="Max Quad Size",
-        description=(
-            "Largest quadtree leaf size in canonical-image pixels (snaps "
-            "to nearest power of 2). The canonical is divided into MxM "
-            "square tiles before quadtree subdivision runs within each — "
-            "keeps leaves square and caps interior coalescing at this "
-            "ceiling"
-        ),
+        description="Largest quadtree leaf size (canonical pixels, snaps to power of 2)",
         default=128,
         min=8,
         soft_max=512,
@@ -286,12 +267,7 @@ class ReconstructionProps(PropertyGroup):
     )
     min_quad_size: IntProperty(
         name="Min Quad Size",
-        description=(
-            "Smallest quadtree leaf size in canonical-image pixels "
-            "(snaps to nearest power of 2). Border quads stop "
-            "subdividing at this floor; smaller values give finer "
-            "silhouettes at the cost of more polygons"
-        ),
+        description="Smallest quadtree leaf size (canonical pixels, snaps to power of 2) — lower = finer silhouettes",
         default=8,
         min=1,
         soft_max=64,
