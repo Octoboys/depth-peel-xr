@@ -7,6 +7,7 @@ from .. import paths
 from ..operators.inspect import get_view_cameras_sorted
 from ..operators.portal_rig import CAM_PREFIX
 from ..operators.preview import expected_captures_present
+from ..operators.recon_cache import all_cached_names as _recon_cache_names
 from ..operators.reconstruct import consolidated_present
 
 
@@ -191,6 +192,34 @@ class DEPTHPEELXR_PT_main(Panel):
                 "depthpeelxr.cleanup_preview",
                 text="Clean Up Geo",
                 icon="TRASH",
+            )
+
+            opt_box = layout.box()
+            opt_box.label(text="Optimisation", icon="SHADERFX")
+            col = opt_box.column(align=True)
+            cull_ready = bool(_recon_cache_names())
+            col.label(
+                text=(
+                    "Build Displaced Quadtree to enable cull"
+                    if not cull_ready
+                    else "Cache populated — cull ready"
+                )
+            )
+            col.separator(factor=1.5)
+            cull_row = col.row(align=True)
+            cull_row.enabled = cull_ready
+            cull_row.operator(
+                "depthpeelxr.cull_occluded",
+                text="Cull Occluded Quads",
+                icon="MOD_MASK",
+            )
+            col.separator()
+            undo_row = col.row(align=True)
+            undo_row.enabled = cull_ready
+            undo_row.operator(
+                "depthpeelxr.undo_cull",
+                text="Undo Cull",
+                icon="LOOP_BACK",
             )
 
         project_box = layout.box()

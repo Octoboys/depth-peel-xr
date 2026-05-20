@@ -10,6 +10,9 @@ from core.quadtree import QuadtreeLeaf
 from core.reconstruction import (
     build_displaced_layer_mesh,
     build_layer_mesh,
+    filter_displaced_mesh,
+    split_displaced_layer_mesh,
+    split_layer_mesh,
 )
 
 
@@ -466,3 +469,177 @@ def test_displaced_shape_mismatch_rejected():
             canonical_coverage=np.ones((8, 8), dtype=bool),
             half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
         )
+
+
+# ---- filter_displaced_mesh --------------------------------------------------
+
+def _build_two_quad_mesh() -> object:
+    """Two adjacent quads sharing the centre edge → 6 unique verts, 2 polygons."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 16, "border"),
+    ]
+    depth, coverage = _flat_depth(32, 16, HO)
+    return build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+
+
+def test_filter_keeps_all_returns_input_unchanged():
+    mesh = _build_two_quad_mesh()
+    out = filter_displaced_mesh(mesh, np.array([True, True]))
+    assert out is mesh  # unchanged when nothing to drop
+
+
+def test_filter_drops_all_returns_empty():
+    mesh = _build_two_quad_mesh()
+    out = filter_displaced_mesh(mesh, np.array([False, False]))
+    assert out.vertices.shape == (0, 3)
+    assert out.polygons == []
+    assert out.poly_uvs.shape == (0, 2)
+
+
+def test_filter_drops_one_polygon_compacts_verts():
+    """Keeping only the left quad drops the two right-edge verts and
+    remaps the kept polygon's indices to the compacted layout."""
+    mesh = _build_two_quad_mesh()
+    out = filter_displaced_mesh(mesh, np.array([True, False]))
+    # Left quad referenced 4 of 6 unique verts; the 2 verts unique to
+    # the right quad get dropped.
+    assert out.vertices.shape == (4, 3)
+    assert len(out.polygons) == 1
+    assert len(out.polygons[0]) == 4
+    # All kept-poly indices must point into the compacted vertex array.
+    assert all(0 <= int(vi) < 4 for vi in out.polygons[0])
+    # Class preserved.
+    assert out.poly_classes[0] == "interior"
+    # Per-loop UV slice preserved (4 loops for the kept quad).
+    assert out.poly_uvs.shape == (4, 2)
+
+
+def test_filter_keeps_loop_uvs_aligned_with_polygons():
+    """When a polygon survives, its loops' UVs should match the
+    original loop slice for that polygon."""
+    mesh = _build_two_quad_mesh()
+    # Keep only the second polygon.
+    out = filter_displaced_mesh(mesh, np.array([False, True]))
+    poly0_len = len(mesh.polygons[0])
+    expected_uvs = mesh.poly_uvs[poly0_len : poly0_len + len(mesh.polygons[1])]
+    np.testing.assert_allclose(out.poly_uvs, expected_uvs)
+
+
+def test_filter_rejects_mask_length_mismatch():
+    mesh = _build_two_quad_mesh()
+    with pytest.raises(ValueError):
+        filter_displaced_mesh(mesh, np.array([True, True, True]))
+
+
+# ---- split helpers ----------------------------------------------------------
+
+def test_split_layer_mesh_partitions_by_class():
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 16, "border"),
+        QuadtreeLeaf(0, 16, 16, 16, "interior"),
+    ]
+    mesh = build_layer_mesh(
+        leaves=leaves,
+        image_width=32, image_height=32,
+        half_w_plane=2.0, half_h_plane=2.0,
+        headplane_offset=1.5, layer_near=3.5,
+    )
+    interior, border = split_layer_mesh(mesh)
+    assert interior.faces.shape == (2, 4)
+    assert border.faces.shape == (1, 4)
+    assert all(c == "interior" for c in interior.face_classes)
+    assert all(c == "border" for c in border.face_classes)
+    # Each half has exactly the verts its faces reference (4 fresh per
+    # leaf, non-shared in slice-1) — interior=8, border=4.
+    assert interior.vertices.shape == (8, 3)
+    assert border.vertices.shape == (4, 3)
+    # All face indices land in their compacted vertex array.
+    assert int(interior.faces.max()) < interior.vertices.shape[0]
+    assert int(border.faces.max()) < border.vertices.shape[0]
+
+
+def test_split_layer_mesh_empty_returns_empty_pair():
+    mesh = build_layer_mesh(
+        leaves=[],
+        image_width=16, image_height=16,
+        half_w_plane=1.0, half_h_plane=1.0,
+        headplane_offset=1.0, layer_near=2.0,
+    )
+    a, b = split_layer_mesh(mesh)
+    assert a.faces.shape == (0, 4)
+    assert b.faces.shape == (0, 4)
+
+
+def test_split_layer_mesh_all_one_class_leaves_other_empty():
+    leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
+    mesh = build_layer_mesh(
+        leaves=leaves,
+        image_width=16, image_height=16,
+        half_w_plane=1.0, half_h_plane=1.0,
+        headplane_offset=1.5, layer_near=3.5,
+    )
+    interior, border = split_layer_mesh(mesh)
+    assert interior.faces.shape == (1, 4)
+    assert border.faces.shape == (0, 4)
+    assert border.vertices.shape == (0, 3)
+
+
+def test_split_displaced_partitions_by_poly_class():
+    """Two adjacent leaves (interior + border) split into two halves
+    with one polygon each. The shared edge corners appear in BOTH halves
+    (same world position — border-flatness already snapped them)."""
+    mesh = _build_two_quad_mesh()  # left=interior, right=border, shared edge at x=16
+    interior, border = split_displaced_layer_mesh(mesh)
+    assert len(interior.polygons) == 1
+    assert len(border.polygons) == 1
+    assert interior.poly_classes[0] == "interior"
+    assert border.poly_classes[0] == "border"
+    # 4 verts per quad after compaction (each half's polygon uses
+    # exactly its 4 corners, including the shared-edge ones).
+    assert interior.vertices.shape == (4, 3)
+    assert border.vertices.shape == (4, 3)
+    # Shared verts coincide geometrically — find the two vert positions
+    # in each half that match between the two halves.
+    int_set = {tuple(np.round(v, 9)) for v in interior.vertices}
+    bord_set = {tuple(np.round(v, 9)) for v in border.vertices}
+    overlap = int_set & bord_set
+    # 2 shared corners on the x=16 edge.
+    assert len(overlap) == 2
+
+
+def test_split_displaced_empty_polys_returns_empty_pair():
+    depth, coverage = _flat_depth(8, 8, HO)
+    empty = build_displaced_layer_mesh(
+        leaves=[],
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    a, b = split_displaced_layer_mesh(empty)
+    assert a.polygons == []
+    assert b.polygons == []
+
+
+def test_split_displaced_all_one_class_other_half_empty():
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 16, "interior"),
+    ]
+    depth, coverage = _flat_depth(32, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    interior, border = split_displaced_layer_mesh(mesh)
+    assert len(interior.polygons) == 2
+    assert len(border.polygons) == 0
+    assert border.vertices.shape == (0, 3)

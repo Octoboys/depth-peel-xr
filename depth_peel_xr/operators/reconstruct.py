@@ -17,6 +17,12 @@ coverage) and slice-2 also reads `consolidated/layer_NN_depth.exr`
 existing reconstruction objects before building. The shared
 `Clean Up Geo` operator (`_remove_preview_objects`) covers both because
 they both spawn under `dpxr_recon_layer_*`.
+
+Each layer emits two mesh objects: `<base>_opaque` (interior leaves,
+emission-only, early-z friendly) and `<base>_alpha` (border leaves,
+emission + alpha-clip). The split aligns with the Phase 5 cull rule
+(opaque-half-only closer-surface) and saves alpha-test cost on the
+runtime for the bulk of each layer's coverage.
 """
 
 from __future__ import annotations
@@ -33,19 +39,27 @@ from .. import paths as paths_mod
 from ..core.geometry import super_frustum_half_extents
 from ..core.quadtree import build_quadtree
 from ..core.reconstruction import (
+    DisplacedLayerMesh,
+    LayerMesh,
     build_displaced_layer_mesh,
     build_layer_mesh,
+    split_displaced_layer_mesh,
+    split_layer_mesh,
 )
 from .inspect import PREVIEW_COLLECTION, SOURCE_COLLECTION
 from .portal_rig import ensure_collection, link_unique
 from .preview import (
+    _build_opaque_material,
     _build_preview_material,
     _load_layer_image,
     _remove_preview_objects,
 )
+from .recon_cache import set_layer_cache
 
 
 _RECON_PREFIX = "dpxr_recon_layer_"
+_OPAQUE_SUFFIX = "_opaque"
+_ALPHA_SUFFIX = "_alpha"
 # Canonical-alpha threshold above which a pixel counts as covered for
 # quadtree subdivision. Slice 2 consolidation packs anti-aliased silhouette
 # alpha at edges, so we sit comfortably above the 0/1 boundary.
@@ -131,13 +145,16 @@ def _load_canonical_depth(exr_path: Path) -> np.ndarray:
 
 def _build_recon_mesh_object(
     name: str,
-    mesh_arrays,
+    mesh_arrays: LayerMesh,
     portal,
     material,
     coll,
-) -> bpy.types.Object:
-    """Hand mesh arrays to bpy: build mesh, write UVs and interior/border
-    vertex groups, attach material, parent to portal."""
+) -> bpy.types.Object | None:
+    """Hand a slice-1 (flat-quadtree) `LayerMesh` half to bpy: build mesh,
+    write UVs, attach material, parent to portal. Returns None when the
+    half has no faces."""
+    if mesh_arrays.faces.shape[0] == 0:
+        return None
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(mesh_arrays.vertices.tolist(), [], mesh_arrays.faces.tolist())
     mesh.update()
@@ -158,35 +175,22 @@ def _build_recon_mesh_object(
     obj.parent = portal
     obj.matrix_parent_inverse = Matrix.Identity(4)
     link_unique(obj, coll)
-
-    interior_group = obj.vertex_groups.new(name="interior")
-    border_group = obj.vertex_groups.new(name="border")
-    # Vertices aren't shared between faces (slice-1 design), so each
-    # vertex belongs to exactly one class. Assign in face order.
-    interior_verts, border_verts = [], []
-    for fi, cls in enumerate(mesh_arrays.face_classes):
-        bucket = interior_verts if cls == "interior" else border_verts
-        bucket.extend(int(i) for i in mesh_arrays.faces[fi])
-    if interior_verts:
-        interior_group.add(interior_verts, 1.0, "REPLACE")
-    if border_verts:
-        border_group.add(border_verts, 1.0, "REPLACE")
-
     return obj
 
 
 def _build_displaced_recon_mesh_object(
     name: str,
-    mesh_arrays,
+    mesh_arrays: DisplacedLayerMesh,
     portal,
     material,
     coll,
-) -> bpy.types.Object:
+) -> bpy.types.Object | None:
     """Slice-2 counterpart of `_build_recon_mesh_object` for the
     polygon-based `DisplacedLayerMesh` (one quad per fast-path leaf,
-    one n-gon per slow-path / T-junction leaf). Verts are shared across
-    polygons so a single vert can belong to both interior and border
-    vertex groups — both groups are assigned independently."""
+    one n-gon per slow-path / T-junction leaf). Returns None for empty
+    halves so callers don't spawn empty objects."""
+    if not mesh_arrays.polygons:
+        return None
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(
         mesh_arrays.vertices.tolist(), [], mesh_arrays.polygons
@@ -205,20 +209,6 @@ def _build_displaced_recon_mesh_object(
     obj.parent = portal
     obj.matrix_parent_inverse = Matrix.Identity(4)
     link_unique(obj, coll)
-
-    interior_group = obj.vertex_groups.new(name="interior")
-    border_group = obj.vertex_groups.new(name="border")
-    interior_verts: set[int] = set()
-    border_verts: set[int] = set()
-    for poly, cls in zip(mesh_arrays.polygons, mesh_arrays.poly_classes):
-        bucket = interior_verts if cls == "interior" else border_verts
-        for vi in poly:
-            bucket.add(int(vi))
-    if interior_verts:
-        interior_group.add(list(interior_verts), 1.0, "REPLACE")
-    if border_verts:
-        border_group.add(list(border_verts), 1.0, "REPLACE")
-
     return obj
 
 
@@ -295,9 +285,20 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
                 headplane_offset=ho,
                 layer_near=d,
             )
-            material = _build_preview_material(f"{base_name}_mat", image)
+            interior_half, border_half = split_layer_mesh(mesh_arrays)
+            opaque_mat = _build_opaque_material(
+                f"{base_name}{_OPAQUE_SUFFIX}_mat", image
+            )
+            alpha_mat = _build_preview_material(
+                f"{base_name}{_ALPHA_SUFFIX}_mat", image
+            )
             _build_recon_mesh_object(
-                base_name, mesh_arrays, portal, material, coll
+                base_name + _OPAQUE_SUFFIX,
+                interior_half, portal, opaque_mat, coll,
+            )
+            _build_recon_mesh_object(
+                base_name + _ALPHA_SUFFIX,
+                border_half, portal, alpha_mat, coll,
             )
             built += 1
             total_quads += len(leaves)
@@ -424,21 +425,39 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
                 half_h_p=half_h_p,
                 headplane_offset=ho,
             )
+            interior_half, border_half = split_displaced_layer_mesh(mesh_arrays)
             t_meshcore = perf_counter() - t0
 
             t0 = perf_counter()
-            material = _build_preview_material(f"{base_name}_mat", image)
-            _build_displaced_recon_mesh_object(
-                base_name, mesh_arrays, portal, material, coll
+            opaque_mat = _build_opaque_material(
+                f"{base_name}{_OPAQUE_SUFFIX}_mat", image
             )
+            alpha_mat = _build_preview_material(
+                f"{base_name}{_ALPHA_SUFFIX}_mat", image
+            )
+            _build_displaced_recon_mesh_object(
+                base_name + _OPAQUE_SUFFIX,
+                interior_half, portal, opaque_mat, coll,
+            )
+            _build_displaced_recon_mesh_object(
+                base_name + _ALPHA_SUFFIX,
+                border_half, portal, alpha_mat, coll,
+            )
+            # Cache both halves so the cull operator can rasterise the
+            # opaque half for closer-surface and rebuild either half
+            # post-filter; Undo Cull restores from the cache.
+            set_layer_cache(base_name, interior_half, border_half)
             t_bpy = perf_counter() - t0
 
             n_leaves = len(leaves)
             n_verts = int(mesh_arrays.vertices.shape[0])
             n_polys = len(mesh_arrays.polygons)
+            n_int = len(interior_half.polygons)
+            n_bord = len(border_half.polygons)
             _log(
                 f"layer {li:02d}  canonical={W}x{H}  "
-                f"leaves={n_leaves}  verts={n_verts}  polys={n_polys}  | "
+                f"leaves={n_leaves}  verts={n_verts}  polys={n_polys} "
+                f"(opaque={n_int}, alpha={n_bord})  | "
                 f"load={t_load:.3f}s  quadtree={t_quadtree:.3f}s  "
                 f"core_mesh={t_meshcore:.3f}s  bpy_handoff={t_bpy:.3f}s"
             )

@@ -367,6 +367,22 @@ Open quality items deferred (still tunable via `Min Quad Size` / `Max Quad Size`
 - `DEPTHPEELXR_OT_undo_cull`: rebuilds from reconstruction cache (so user can re-enable culled quads without a full rebake).
 - N-panel section `Optimisation`: `Cull Occluded Quads` toggle + button, `Undo Cull` button.
 
+**Status**: slice 1 in working tree, sign-off pending. Not yet committed.
+
+**Slice 1 (working tree, sign-off pending)** — per-vertex cull with opaque-mesh closer-surface (cheap, conservative).
+
+*Reconstruction split.* Both `Build Quadtree Planes` and `Build Displaced Quadtree` now emit two mesh objects per layer: `dpxr_recon_layer_NN_opaque` (interior leaves, emission-only material — early-z friendly, runtime-perf win) and `dpxr_recon_layer_NN_alpha` (border leaves, emission + alpha-clip). `core/reconstruction.py` gained `split_layer_mesh` / `split_displaced_layer_mesh` to partition mesh arrays by leaf class, with vert compaction (`split_displaced_layer_mesh` reuses `filter_displaced_mesh`). Verts shared between an interior and border leaf appear in both halves at coincident world positions — border-flatness already snapped the shared corner to the foreground depth, so there's no visual seam. The slice-1-shipped vertex groups (`interior` / `border`) are gone — selection by object name in the Outliner replaces them.
+
+*Cull pipeline.* `core/occlusion.py` (`cull_layer`) — pure-numpy per-vert visibility test against per-cam closer-surface depth buffers; unchanged from the initial slice-1 working-tree state. `core/raster.py` (new) — pure-numpy software depth rasteriser (`rasterise_depth`, perspective-correct via 1/w interpolation; `fan_triangulate_polygons` for converting variable-length DisplacedLayerMesh polygons to tris). Triangles whose verts straddle the near plane are skipped (conservative under-cull at slab boundaries, fine for the cull goal). 11 pytest cases.
+
+*Cache.* `operators/recon_cache.py` is a module-level `dict[base_name → LayerCachePair(opaque, alpha)]`, populated by `Build Displaced Quadtree` before bpy handoff and cleared by `Clean Up Geo`.
+
+*Operator.* `operators/occlusion_cull.py` walks layers near→far. At each layer L > 0 it culls **both** halves against the accumulated `closer_per_cam`, then rasterises **only** layer L's opaque half from each cam and per-pixel-MIN merges into `closer_per_cam` for downstream layers. Captured-EXR alpha-thresholded closer-surface (the original slice-1-state path) is gone entirely — the opaque half *is* the geometry that owns pixels at runtime, so its silhouette is the correct occluder by construction. Undo Cull rebuilds both halves from the cached arrays. UI: `Optimisation` section under Reconstruction, gated on the cache being populated. Cache lives in module memory only — reload Blender → rebuild before culling.
+
+Per-vert was picked over per-pixel for slice-1 simplicity. Conservative: misses the rare case where a quad's 4 corners are all hidden but its interior is visible (closer-surface bumps non-monotonically inside the quad's projection).
+
+**Slice 2 (deferred)** — per-pixel rasterizer for the cull's visibility test (catches the corner-hidden-but-interior-visible case). The architecture (rasterised opaque-half closer-surface) extends naturally: the cull would rasterise each layer's full mesh (opaque + alpha) at projected vert depths and z-test the result.
+
 **Acceptance**:
 - On a scene with a closer wall fully covering a farther wall: the farther layer's covered region is culled.
 - On a scene with a closer wall partially covering: only the blocked quads drop.

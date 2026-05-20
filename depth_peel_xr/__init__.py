@@ -6,6 +6,7 @@ from .operators import capture as op_capture
 from .operators import consolidate as op_consolidate
 from .operators import preview as op_preview
 from .operators import reconstruct as op_reconstruct
+from .operators import occlusion_cull as op_occlusion_cull
 from .ui import n_panel
 from .ui import overlays
 
@@ -19,6 +20,7 @@ _MODULES = (
     op_consolidate,
     op_preview,
     op_reconstruct,
+    op_occlusion_cull,
     n_panel,
     overlays,
 )

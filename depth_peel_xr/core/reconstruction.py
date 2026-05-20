@@ -138,6 +138,138 @@ def build_layer_mesh(
     )
 
 
+def split_layer_mesh(mesh: LayerMesh) -> tuple[LayerMesh, LayerMesh]:
+    """Partition a `LayerMesh` (slice-1 flat) into (interior, border)
+    halves by `face_classes`. Each half retains only its own faces and the
+    4 fresh verts those faces own — slice-1 verts aren't shared, so the
+    split is a clean per-face partition with no vert remap needed beyond
+    a contiguous reindex.
+    """
+    n_faces = mesh.faces.shape[0]
+    if n_faces == 0:
+        empty = LayerMesh(
+            vertices=np.empty((0, 3), dtype=mesh.vertices.dtype),
+            faces=np.empty((0, 4), dtype=mesh.faces.dtype),
+            uvs=np.empty((0, 4, 2), dtype=mesh.uvs.dtype),
+            face_classes=np.empty(0, dtype=object),
+        )
+        return empty, empty
+
+    is_interior = np.array(
+        [cls == "interior" for cls in mesh.face_classes], dtype=bool
+    )
+
+    def _take(mask: np.ndarray) -> LayerMesh:
+        kept_faces = mesh.faces[mask]
+        if kept_faces.size == 0:
+            return LayerMesh(
+                vertices=np.empty((0, 3), dtype=mesh.vertices.dtype),
+                faces=np.empty((0, 4), dtype=mesh.faces.dtype),
+                uvs=np.empty((0, 4, 2), dtype=mesh.uvs.dtype),
+                face_classes=np.empty(0, dtype=object),
+            )
+        used = np.unique(kept_faces.reshape(-1))
+        remap = np.full(mesh.vertices.shape[0], -1, dtype=np.int64)
+        remap[used] = np.arange(used.size, dtype=np.int64)
+        return LayerMesh(
+            vertices=mesh.vertices[used].copy(),
+            faces=remap[kept_faces].copy(),
+            uvs=mesh.uvs[mask].copy(),
+            face_classes=mesh.face_classes[mask].copy(),
+        )
+
+    return _take(is_interior), _take(~is_interior)
+
+
+def split_displaced_layer_mesh(
+    mesh: DisplacedLayerMesh,
+) -> tuple[DisplacedLayerMesh, DisplacedLayerMesh]:
+    """Partition a `DisplacedLayerMesh` into (interior, border) halves by
+    `poly_classes`. Reuses `filter_displaced_mesh` for vert compaction —
+    each half drops verts not referenced by its surviving polygons.
+    Verts shared between an interior and a border leaf appear in BOTH
+    halves at the same world position (border-flatness already snapped
+    the interior side to the border's foreground depth, so the duplicate
+    coincides geometrically — no visual seam).
+    """
+    if not mesh.polygons:
+        empty = DisplacedLayerMesh(
+            vertices=np.empty((0, 3), dtype=mesh.vertices.dtype),
+            polygons=[],
+            poly_uvs=np.empty((0, 2), dtype=mesh.poly_uvs.dtype),
+            poly_classes=np.empty(0, dtype=object),
+        )
+        return empty, empty
+
+    is_interior = np.array(
+        [cls == "interior" for cls in mesh.poly_classes], dtype=bool
+    )
+    return (
+        filter_displaced_mesh(mesh, is_interior),
+        filter_displaced_mesh(mesh, ~is_interior),
+    )
+
+
+def filter_displaced_mesh(
+    mesh: DisplacedLayerMesh, keep_mask: np.ndarray
+) -> DisplacedLayerMesh:
+    """Return a new DisplacedLayerMesh with only polygons where
+    `keep_mask` is True. Compacts the vertex array — verts not
+    referenced by any surviving polygon are dropped, and surviving
+    polygons' indices are remapped to the compacted layout. Useful for
+    occlusion-culling: the cull operator filters polygons then rebuilds
+    the bpy mesh from the smaller arrays.
+    """
+    if keep_mask.shape[0] != len(mesh.polygons):
+        raise ValueError(
+            f"keep_mask length {keep_mask.shape[0]} does not match "
+            f"polygon count {len(mesh.polygons)}"
+        )
+    if keep_mask.all():
+        return mesh
+    if not keep_mask.any():
+        return DisplacedLayerMesh(
+            vertices=np.empty((0, 3), dtype=mesh.vertices.dtype),
+            polygons=[],
+            poly_uvs=np.empty((0, 2), dtype=mesh.poly_uvs.dtype),
+            poly_classes=np.empty(0, dtype=object),
+        )
+
+    poly_lens = np.fromiter(
+        (len(p) for p in mesh.polygons), dtype=np.int64, count=len(mesh.polygons)
+    )
+    loop_starts = np.concatenate(([0], np.cumsum(poly_lens)))
+
+    used_verts: set[int] = set()
+    for p_idx, keep in enumerate(keep_mask):
+        if keep:
+            used_verts.update(int(vi) for vi in mesh.polygons[p_idx])
+    used_arr = np.fromiter(sorted(used_verts), dtype=np.int64, count=len(used_verts))
+
+    remap = np.full(mesh.vertices.shape[0], -1, dtype=np.int64)
+    remap[used_arr] = np.arange(used_arr.size, dtype=np.int64)
+
+    new_polygons: list[tuple[int, ...]] = []
+    new_uvs_chunks: list[np.ndarray] = []
+    new_classes: list = []
+    for p_idx, keep in enumerate(keep_mask):
+        if not keep:
+            continue
+        old_poly = mesh.polygons[p_idx]
+        new_polygons.append(tuple(int(remap[vi]) for vi in old_poly))
+        new_uvs_chunks.append(
+            mesh.poly_uvs[loop_starts[p_idx] : loop_starts[p_idx + 1]]
+        )
+        new_classes.append(mesh.poly_classes[p_idx])
+
+    return DisplacedLayerMesh(
+        vertices=mesh.vertices[used_arr],
+        polygons=new_polygons,
+        poly_uvs=np.concatenate(new_uvs_chunks, axis=0),
+        poly_classes=np.asarray(new_classes, dtype=object),
+    )
+
+
 def _compute_corner_depths(
     canonical_depth: np.ndarray, canonical_coverage: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:

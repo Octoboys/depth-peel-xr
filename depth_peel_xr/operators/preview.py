@@ -103,6 +103,8 @@ def _load_layer_image(exr_path: Path, image_name: str) -> bpy.types.Image:
 def _build_preview_material(
     name: str, image: bpy.types.Image
 ) -> bpy.types.Material:
+    """Emission + alpha-clip — for border (silhouette) halves and the
+    legacy single-mesh preview/recon paths. Coverage drives alpha cutout."""
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
 
@@ -134,10 +136,38 @@ def _build_preview_material(
     return mat
 
 
+def _build_opaque_material(
+    name: str, image: bpy.types.Image
+) -> bpy.types.Material:
+    """Emission only — for interior halves. No alpha test, no transparent
+    BSDF; early-z friendly for the runtime, and acts as a clean occluder
+    for the cull's rasterised closer-surface."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    mat.surface_render_method = "DITHERED"
+
+    nt = mat.node_tree
+    nt.nodes.clear()
+
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = image
+    emission = nt.nodes.new("ShaderNodeEmission")
+    emission.inputs["Strength"].default_value = 1.0
+
+    nt.links.new(tex.outputs["Color"], emission.inputs["Color"])
+    nt.links.new(emission.outputs["Emission"], out.inputs["Surface"])
+    return mat
+
+
 def _remove_preview_objects() -> int:
     """Wipe both simple-plane (`dpxr_preview_layer_*`) and reconstruction
     (`dpxr_recon_layer_*`) entities. They share the cleanup path because
-    they're mutually exclusive — only one geo flavour at a time."""
+    they're mutually exclusive — only one geo flavour at a time. Also
+    drops the displaced-mesh pre-cull cache, since it's keyed by the
+    recon mesh names we're about to remove."""
+    from .recon_cache import clear_cache
+
     def starts_with_any(name: str) -> bool:
         return any(name.startswith(p) for p in _GEO_PREFIXES)
 
@@ -157,6 +187,7 @@ def _remove_preview_objects() -> int:
     for img in [i for i in bpy.data.images if starts_with_any(i.name)]:
         if img.users == 0:
             bpy.data.images.remove(img)
+    clear_cache()
     return removed
 
 
