@@ -229,6 +229,9 @@ def _save_flat_exr(path: Path, rgba: np.ndarray) -> None:
         bpy.data.images.remove(img)
 
 
+_CONSOLIDATE_TIMER_INTERVAL = 0.05  # seconds — same cadence as capture
+
+
 class DEPTHPEELXR_OT_consolidate_views(Operator):
     bl_idname = "depthpeelxr.consolidate_views"
     bl_label = "Consolidate Views"
@@ -247,7 +250,7 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
             return False
         return True
 
-    def execute(self, context):
+    def invoke(self, context, event):
         scene = context.scene
         rig = scene.dpx_portal_rig
         lp = scene.dpx_layer_placement
@@ -279,8 +282,8 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
         half_w_p = rig.portal_width * 0.5
         half_h_p = rig.portal_height * 0.5
 
-        # Canonical's virtual cam is fixed by the rig (portal extents + ho);
-        # only the buffer shape varies per layer.
+        # Canonical's virtual cam is fixed by the rig; only the buffer
+        # shape varies per layer.
         canonical_from_centre, canonical_proj = super_frustum_projection(
             half_w_p, half_h_p, ho
         )
@@ -299,67 +302,162 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
                 cams[sib_idx], render_x, render_y, pixel_aspect_x, pixel_aspect_y
             )
 
-        written = 0
-        for li, layer in enumerate(lp.layers):
-            centre_color = _color_path(captures, li, centre_idx)
-            if not centre_color.exists():
-                self.report({"WARNING"}, f"Layer {li}: centre EXR missing, skipped")
+        # Stash everything modal() needs.
+        self._captures = captures
+        self._consolidated = consolidated
+        self._layers = list(lp.layers)
+        self._centre_idx = centre_idx
+        self._sibling_order = sibling_order
+        self._centre_world_from_cam = centre_world_from_cam
+        self._centre_proj = centre_proj
+        self._canonical_cam_from_world = canonical_cam_from_world
+        self._canonical_proj = canonical_proj
+        self._sibling_matrices = sibling_matrices
+        self._half_w_p = half_w_p
+        self._half_h_p = half_h_p
+        self._ho = ho
+        self._cursor = 0
+        self._total = len(self._layers)
+        self._completed = 0
+        self._written = 0
+        self._should_cancel = False
+
+        wm = context.window_manager
+        wm.progress_begin(0, max(1, self._total))
+        self._timer = wm.event_timer_add(
+            _CONSOLIDATE_TIMER_INTERVAL, window=context.window
+        )
+        wm.modal_handler_add(self)
+        self._update_header(context)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            self._should_cancel = True
+            self._update_header(context, "cancelling…")
+            return {"RUNNING_MODAL"}
+
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+
+        if self._should_cancel:
+            return self._abort(context, "Cancelled by user")
+
+        if self._cursor >= self._total:
+            return self._finish(context)
+
+        try:
+            self._consolidate_one_layer(context)
+        except Exception as exc:
+            return self._abort(
+                context,
+                f"Consolidation failed at layer {self._cursor}: {exc}",
+            )
+
+        self._cursor += 1
+        self._completed += 1
+        context.window_manager.progress_update(self._completed)
+        self._update_header(context)
+        return {"RUNNING_MODAL"}
+
+    def cancel(self, context):
+        self._teardown_modal(context)
+        return None
+
+    def _consolidate_one_layer(self, context):
+        li = self._cursor
+        layer = self._layers[li]
+        centre_color = _color_path(self._captures, li, self._centre_idx)
+        if not centre_color.exists():
+            self.report({"WARNING"}, f"Layer {li}: centre EXR missing, skipped")
+            return
+
+        centre_rgba, centre_depth, centre_W, centre_H = _load_view_passes(
+            self._captures, li, self._centre_idx
+        )
+        views_sorted = [{
+            "rgba": centre_rgba,
+            "depth": centre_depth,
+            "world_from_cam": self._centre_world_from_cam,
+            "proj": self._centre_proj,
+        }]
+        for sib_idx in self._sibling_order:
+            sib_color = _color_path(self._captures, li, sib_idx)
+            if not sib_color.exists():
                 continue
             try:
-                centre_rgba, centre_depth, centre_W, centre_H = _load_view_passes(
-                    captures, li, centre_idx
+                sib_rgba, sib_depth, _, _ = _load_view_passes(
+                    self._captures, li, sib_idx
                 )
             except Exception as exc:
-                self.report({"ERROR"}, f"Layer {li}: failed to read centre EXR: {exc}")
-                return {"CANCELLED"}
+                self.report(
+                    {"WARNING"},
+                    f"Layer {li} view {sib_idx}: read failed: {exc}",
+                )
+                continue
+            sib_world_from_cam, sib_proj = self._sibling_matrices[sib_idx]
+            views_sorted.append({
+                "rgba": sib_rgba,
+                "depth": sib_depth,
+                "world_from_cam": sib_world_from_cam,
+                "proj": sib_proj,
+            })
 
-            views_sorted = [{
-                "rgba": centre_rgba,
-                "depth": centre_depth,
-                "world_from_cam": centre_world_from_cam,
-                "proj": centre_proj,
-            }]
-            for sib_idx in sibling_order:
-                sib_color = _color_path(captures, li, sib_idx)
-                if not sib_color.exists():
-                    continue
-                try:
-                    sib_rgba, sib_depth, _, _ = _load_view_passes(captures, li, sib_idx)
-                except Exception as exc:
-                    self.report({"WARNING"}, f"Layer {li} view {sib_idx}: read failed: {exc}")
-                    continue
-                sib_world_from_cam, sib_proj = sibling_matrices[sib_idx]
-                views_sorted.append({
-                    "rgba": sib_rgba,
-                    "depth": sib_depth,
-                    "world_from_cam": sib_world_from_cam,
-                    "proj": sib_proj,
-                })
+        canonical_W, canonical_H = super_frustum_canonical_shape(
+            layer.near, centre_W, centre_H,
+            self._half_w_p, self._half_h_p, self._ho,
+        )
 
-            canonical_W, canonical_H = super_frustum_canonical_shape(
-                layer.near, centre_W, centre_H, half_w_p, half_h_p, ho
-            )
+        rgba, depth, _coverage, source = consolidate_layer(
+            views_sorted=views_sorted,
+            canonical_shape=(canonical_H, canonical_W),
+            canonical_cam_from_world=self._canonical_cam_from_world,
+            canonical_proj=self._canonical_proj,
+        )
 
-            rgba, depth, _coverage, source = consolidate_layer(
-                views_sorted=views_sorted,
-                canonical_shape=(canonical_H, canonical_W),
-                canonical_cam_from_world=canonical_cam_from_world,
-                canonical_proj=canonical_proj,
-            )
+        _write_canonical_outputs(self._consolidated, li, rgba, depth, source)
+        self._written += 1
 
-            try:
-                _write_canonical_outputs(consolidated, li, rgba, depth, source)
-            except Exception as exc:
-                self.report({"ERROR"}, f"Layer {li}: failed to write outputs: {exc}")
-                return {"CANCELLED"}
-            written += 1
-
-        if written == 0:
+    def _finish(self, context):
+        self._teardown_modal(context)
+        if self._written == 0:
             self.report({"ERROR"}, "No layers consolidated (check captures)")
             return {"CANCELLED"}
-
-        self.report({"INFO"}, f"Consolidated {written} layer(s) → {consolidated}")
+        self.report(
+            {"INFO"},
+            f"Consolidated {self._written} layer(s) → {self._consolidated}",
+        )
         return {"FINISHED"}
+
+    def _abort(self, context, reason: str):
+        self._teardown_modal(context)
+        self.report(
+            {"WARNING"},
+            f"{reason} ({self._completed}/{self._total} done)",
+        )
+        return {"CANCELLED"}
+
+    def _teardown_modal(self, context):
+        wm = context.window_manager
+        wm.progress_end()
+        if getattr(self, "_timer", None) is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.header_text_set(None)
+
+    def _update_header(self, context, suffix: str = ""):
+        text = (
+            f"Depth Peel XR — consolidating layer "
+            f"{min(self._cursor + 1, self._total)}/{self._total}"
+        )
+        if suffix:
+            text = f"{text} ({suffix})"
+        text = f"{text} — ESC to cancel"
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.header_text_set(text)
 
 
 CLASSES = (DEPTHPEELXR_OT_consolidate_views,)

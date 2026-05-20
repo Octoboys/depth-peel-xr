@@ -274,6 +274,21 @@ class ReconstructionProps(PropertyGroup):
         subtype="PIXEL",
         update=_on_min_quad_size_change,
     )
+    depth_gradient_tol: FloatProperty(
+        name="Depth Tol",
+        description=(
+            "Max canonical-depth range allowed within an interior leaf "
+            "(metres). Leaves with greater range subdivide further down "
+            "to Min Quad Size — drives detail at depth discontinuities. "
+            "Only used by Build Displaced Planes."
+        ),
+        default=0.1,
+        min=0.001,
+        soft_max=2.0,
+        precision=3,
+        step=1,
+        unit="LENGTH",
+    )
 
 
 CLASSES = (PortalRigProps, PathsProps, LayerEntry, LayerPlacementProps, CaptureProps, ReconstructionProps)

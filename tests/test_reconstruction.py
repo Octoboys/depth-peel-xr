@@ -5,8 +5,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from core.geometry import inverse_canonical_projection
 from core.quadtree import QuadtreeLeaf
-from core.reconstruction import build_layer_mesh
+from core.reconstruction import (
+    build_displaced_layer_mesh,
+    build_layer_mesh,
+)
+
+
+# Portal: 4 wide × 2 tall at headplane_offset = 2.
+HALF_W_P = 2.0
+HALF_H_P = 1.0
+HO = 2.0
 
 
 def test_empty_leaf_list_returns_empty_arrays():
@@ -36,21 +46,21 @@ def test_single_full_image_leaf_spans_plane():
     # Y coord should be ho - near = 1.5 - 3.5 = -2.0 for every vertex.
     assert np.allclose(mesh.vertices[:, 1], -2.0)
 
-    # Vertex positions in TL, TR, BR, BL order (px space).
-    # TL pixel (0, 0) → portal (+half_w, y, +half_h)
-    # TR pixel (64, 0) → portal (-half_w, y, +half_h)
+    # Vertex positions in TL, BL, BR, TR order (pixel-CCW for +Y normal).
+    # TL pixel (0, 0)   → portal (+half_w, y, +half_h)
+    # BL pixel (0, 64)  → portal (+half_w, y, -half_h)
     # BR pixel (64, 64) → portal (-half_w, y, -half_h)
-    # BL pixel (0, 64) → portal (+half_w, y, -half_h)
+    # TR pixel (64, 0)  → portal (-half_w, y, +half_h)
     np.testing.assert_allclose(mesh.vertices[0], [+2.0, -2.0, +1.0])
-    np.testing.assert_allclose(mesh.vertices[1], [-2.0, -2.0, +1.0])
+    np.testing.assert_allclose(mesh.vertices[1], [+2.0, -2.0, -1.0])
     np.testing.assert_allclose(mesh.vertices[2], [-2.0, -2.0, -1.0])
-    np.testing.assert_allclose(mesh.vertices[3], [+2.0, -2.0, -1.0])
+    np.testing.assert_allclose(mesh.vertices[3], [-2.0, -2.0, +1.0])
 
-    # UVs in same order.
+    # UVs in same TL, BL, BR, TR order.
     np.testing.assert_allclose(mesh.uvs[0, 0], [0.0, 1.0])  # TL
-    np.testing.assert_allclose(mesh.uvs[0, 1], [1.0, 1.0])  # TR
+    np.testing.assert_allclose(mesh.uvs[0, 1], [0.0, 0.0])  # BL
     np.testing.assert_allclose(mesh.uvs[0, 2], [1.0, 0.0])  # BR
-    np.testing.assert_allclose(mesh.uvs[0, 3], [0.0, 0.0])  # BL
+    np.testing.assert_allclose(mesh.uvs[0, 3], [1.0, 1.0])  # TR
 
 
 def test_non_shared_vertices_per_leaf():
@@ -87,7 +97,7 @@ def test_face_class_preserved_from_leaf():
     assert list(mesh.face_classes) == ["interior", "border"]
 
 
-def test_face_winding_normal_points_minus_y():
+def test_face_winding_normal_points_plus_y():
     # Edges 0→1 and 0→3 of the first face, cross product → normal direction.
     leaves = [QuadtreeLeaf(0, 0, 64, 64, "interior")]
     mesh = build_layer_mesh(
@@ -100,5 +110,355 @@ def test_face_winding_normal_points_minus_y():
     e01 = v1 - v0
     e03 = v3 - v0
     normal = np.cross(e01, e03)
-    # Should point in -Y direction (matches Build Simple Planes winding).
-    assert normal[1] < 0
+    # Should point in +Y direction (toward the head-plane viewer).
+    assert normal[1] > 0
+
+
+# ---- displaced mesh builder (slice 2) ---------------------------------------
+
+def _flat_depth(W: int, H: int, d: float) -> tuple[np.ndarray, np.ndarray]:
+    """Constant-depth canonical (fully covered) at canonical depth d."""
+    depth = np.full((H, W), d, dtype=np.float32)
+    coverage = np.ones((H, W), dtype=bool)
+    return depth, coverage
+
+
+def test_displaced_empty_leaf_list_returns_empty_arrays():
+    depth, coverage = _flat_depth(16, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=[],
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    assert mesh.vertices.shape == (0, 3)
+    assert mesh.triangles.shape == (0, 3)
+    assert mesh.triangle_uvs.shape == (0, 3, 2)
+
+
+def test_displaced_single_leaf_at_constant_depth_produces_two_tris():
+    leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
+    depth, coverage = _flat_depth(16, 16, HO)  # d = HO → portal-local y = -HO/2
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # 4 unique corners → 4 verts; fan from TL → 2 tris.
+    assert mesh.vertices.shape == (4, 3)
+    assert mesh.triangles.shape == (2, 3)
+    assert all(cls == "interior" for cls in mesh.triangle_classes)
+    # All verts at the same y_portal = ho/2 - d = 1 - 2 = -1.
+    np.testing.assert_allclose(mesh.vertices[:, 1], -1.0, atol=1e-9)
+
+
+def test_displaced_two_same_size_leaves_share_edge_verts():
+    """Two adjacent same-size leaves: the shared corners are deduplicated
+    (6 unique verts, not 8)."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 16, "interior"),
+    ]
+    depth, coverage = _flat_depth(32, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    assert mesh.vertices.shape == (6, 3)
+    # 2 leaves × 2 fan tris each = 4 tris (no T-junction, no extras).
+    assert mesh.triangles.shape == (4, 3)
+
+
+def test_displaced_t_junction_inserts_mid_edge_vert_into_big_leaf():
+    """One big leaf next to two stacked small leaves on its right edge:
+    the mid-edge vert (x=16, y=8) appears in BOTH leaves' polygons. Big
+    leaf's polygon has 5 verts → 3 fan tris; each small leaf has 4 verts
+    → 2 fan tris. Total 7 tris."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),  # big left
+        QuadtreeLeaf(16, 0, 16, 8, "interior"),  # small top-right
+        QuadtreeLeaf(16, 8, 16, 8, "interior"),  # small bottom-right
+    ]
+    depth, coverage = _flat_depth(32, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # Unique corners: (0,0), (16,0), (16,16), (0,16),
+    #                 (32,0), (32,8), (32,16),
+    #                 (16,8) ← T-junction vert.
+    # = 8 verts.
+    assert mesh.vertices.shape == (8, 3)
+    # Big leaf's polygon: TL(0,0), TR(16,0), R-extra(16,8), BR(16,16), BL(0,16) = 5 → 3 tris.
+    # Each small leaf: 4 verts → 2 tris.
+    assert mesh.triangles.shape == (3 + 2 + 2, 3)
+
+
+def test_displaced_t_junction_no_cracks_between_neighbours():
+    """For a T-junction at constant depth, the mid-edge vertex sits on the
+    same plane as the big leaf's edge — geometry is watertight (no z gap
+    at the seam)."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 8, "interior"),
+        QuadtreeLeaf(16, 8, 16, 8, "interior"),
+    ]
+    depth, coverage = _flat_depth(32, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # All verts at same y_portal (constant depth). No depth jump → no crack.
+    np.testing.assert_allclose(mesh.vertices[:, 1], -1.0, atol=1e-9)
+
+
+def test_displaced_per_vertex_depth_via_inverse_projection():
+    """Vertex at canonical NDC (0, 0) at depth d → portal-local (0, ho/2-d, 0)."""
+    leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
+    # Depth = 2*HO at every pixel; corner-averaged depth is also 2*HO.
+    depth = np.full((16, 16), 2.0 * HO, dtype=np.float32)
+    coverage = np.ones((16, 16), dtype=bool)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # Expected y_portal = HO/2 - 2*HO = -1.5*HO.
+    np.testing.assert_allclose(mesh.vertices[:, 1], -1.5 * HO, atol=1e-9)
+    # TL pixel corner (0, 0) → NDC (-1, +1) → portal +X, +Z corner.
+    # x_portal = -(-1) * 2*HO * HALF_W_P * 2/HO = +4*HALF_W_P = 8.
+    # z_portal = +1 * 2*HO * HALF_H_P * 2/HO = +4*HALF_H_P = 4.
+    np.testing.assert_allclose(mesh.vertices[0, 0], 8.0, atol=1e-9)
+    np.testing.assert_allclose(mesh.vertices[0, 2], 4.0, atol=1e-9)
+
+
+def test_displaced_fan_winding_normal_points_plus_y():
+    """First triangle's winding gives +Y normal (toward head-plane viewer)."""
+    leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
+    depth, coverage = _flat_depth(16, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    tri = mesh.triangles[0]
+    v0 = mesh.vertices[tri[0]]
+    v1 = mesh.vertices[tri[1]]
+    v2 = mesh.vertices[tri[2]]
+    normal = np.cross(v1 - v0, v2 - v0)
+    assert normal[1] > 0
+
+
+def test_displaced_uvs_screen_space_passthrough():
+    """Each triangle vertex's UV equals (px/W, 1 - py/H) for that vert."""
+    leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
+    depth, coverage = _flat_depth(16, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # First tri (TL, BL, BR) in pixel-CCW: UVs (0, 1), (0, 0), (1, 0).
+    np.testing.assert_allclose(mesh.triangle_uvs[0, 0], [0.0, 1.0], atol=1e-9)
+    np.testing.assert_allclose(mesh.triangle_uvs[0, 1], [0.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(mesh.triangle_uvs[0, 2], [1.0, 0.0], atol=1e-9)
+
+
+def test_displaced_invalid_corners_use_leaf_local_mean():
+    """A border leaf with corners in fully-uncovered territory falls back
+    to the average of the leaf's own valid corner depths — not the
+    layer-wide mean — so silhouette verts match the rest of their quad."""
+    H = W = 8
+    # Two leaves with very different depths. The left leaf has all-
+    # uncovered corners (no covered cells anywhere near it), while the
+    # right leaf is fully covered at depth 2·HO. Without leaf-local
+    # fallback the left-leaf corners would inherit the layer-wide mean
+    # (= 2·HO since it's the only covered region) and then drift far
+    # from the layer's actual scene structure on that side.
+    leaves = [
+        QuadtreeLeaf(0, 0, 4, 4, "border"),       # left, no coverage near
+        QuadtreeLeaf(4, 0, 4, 4, "interior"),     # right, depth 2·HO
+    ]
+    coverage = np.zeros((H, W), dtype=bool)
+    coverage[0:4, 4:8] = True  # right leaf fully covered
+    depth = np.zeros((H, W), dtype=np.float32)
+    depth[0:4, 4:8] = 2.0 * HO
+
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # Right leaf's 4 corners (px ∈ {4, 8}, py ∈ {0, 4}) all valid → 2·HO.
+    # Left leaf's outer corners (px=0) have no covered neighbour even in
+    # the dilated 4×4 stencil → invalid → leaf-local fallback to the
+    # mean of the left leaf's valid corners. The shared-edge corners at
+    # px=4 are valid (right leaf finds them at 2·HO via the 2×2/4×4
+    # stencil), so the left leaf's local mean = 2·HO and ALL verts end
+    # up at the same y_portal.
+    expected_y = 0.5 * HO - 2.0 * HO  # = -3 with HO = 2
+    np.testing.assert_allclose(mesh.vertices[:, 1], expected_y, atol=1e-9)
+
+
+def test_displaced_border_leaf_corners_flatten_to_leaf_min():
+    """Border-classified leaves snap their 4 corners to the leaf's own
+    MIN-over-covered-cells depth — silhouette cards stay co-planar in
+    3D even when per-corner stencils sample different parts of the
+    scene's depth profile."""
+    H = W = 16
+    # Single border leaf with mixed coverage. The covered cells span
+    # two depths (HO at TL quadrant, 2·HO at BR quadrant). Without the
+    # border-flat snap, the four corners would sample different MIN-
+    # stencil values (some HO, some 2·HO) → tilted quad.
+    leaves = [QuadtreeLeaf(0, 0, 16, 16, "border")]
+    coverage = np.zeros((H, W), dtype=bool)
+    coverage[0:8, 0:8] = True
+    coverage[8:16, 8:16] = True
+    depth = np.zeros((H, W), dtype=np.float32)
+    depth[0:8, 0:8] = HO
+    depth[8:16, 8:16] = 2.0 * HO
+
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # MIN across all covered cells in the leaf = HO. All 4 corners snap.
+    expected_y = 0.5 * HO - HO  # = -1
+    np.testing.assert_allclose(mesh.vertices[:, 1], expected_y, atol=1e-9)
+
+
+def test_displaced_border_pulls_shared_interior_corner_forward():
+    """A corner shared between an interior leaf (deeper) and a border
+    leaf (foreground) snaps to the border's flat depth — the user's
+    "border quads stay flat" rule wins over the interior's stencil at
+    the silhouette edge."""
+    H = W = 16
+    # Border leaf on the left at depth HO (foreground).
+    # Interior leaf on the right at depth 2·HO (background).
+    # They share the edge at x=8.
+    leaves = [
+        QuadtreeLeaf(0, 0, 8, 16, "border"),
+        QuadtreeLeaf(8, 0, 8, 16, "interior"),
+    ]
+    coverage = np.ones((H, W), dtype=bool)
+    depth = np.full((H, W), 2.0 * HO, dtype=np.float32)
+    depth[:, :8] = HO
+
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    fg_y = 0.5 * HO - HO         # = -1
+    bg_y = 0.5 * HO - 2.0 * HO   # = -3
+    ys = mesh.vertices[:, 1]
+    # Border leaf corners (x in {0, 8}, y in {0, 16}) all at fg_y.
+    # Interior corners at x=16 stay at bg_y. Shared corners at x=8
+    # snapped to fg_y by the border-flatness pass (overriding the
+    # interior's 2·HO MIN-stencil result).
+    n_fg = int(np.isclose(ys, fg_y).sum())
+    n_bg = int(np.isclose(ys, bg_y).sum())
+    # 6 unique verts: x ∈ {0, 8, 16}, y ∈ {0, 16}. 4 at fg, 2 at bg.
+    assert mesh.vertices.shape == (6, 3)
+    assert n_fg == 4
+    assert n_bg == 2
+
+
+def test_displaced_min_over_depth_jump_picks_foreground():
+    """At a within-coverage depth jump (fg|bg both covered with different
+    depths), the shared corner takes MIN — foreground depth wins so
+    silhouettes don't bleed backward toward the average."""
+    H = W = 8
+    leaves = [
+        QuadtreeLeaf(0, 0, 4, 8, "interior"),  # left half (fg, depth = HO)
+        QuadtreeLeaf(4, 0, 4, 8, "interior"),  # right half (bg, depth = 2·HO)
+    ]
+    coverage = np.ones((H, W), dtype=bool)
+    depth = np.full((H, W), 2.0 * HO, dtype=np.float32)
+    depth[:, :4] = HO
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # 6 unique corners: x ∈ {0, 4, 8}, y ∈ {0, 8}. Shared at x=4.
+    assert mesh.vertices.shape == (6, 3)
+    fg_y = 0.5 * HO - HO         # = -1
+    bg_y = 0.5 * HO - 2.0 * HO   # = -3
+    ys = mesh.vertices[:, 1]
+    # Shared corners (x=4) take MIN(fg, bg) = fg → 4 verts at fg_y
+    # (left-edge x=0 corners + shared x=4 corners), 2 verts at bg_y
+    # (right-edge x=8 corners only).
+    assert int(np.isclose(ys, fg_y).sum()) == 4
+    assert int(np.isclose(ys, bg_y).sum()) == 2
+
+
+def test_displaced_dilate_fallback_finds_far_neighbour():
+    """A corner whose 2x2 stencil is fully uncovered but whose 4x4
+    stencil has covered cells uses the dilated stencil (MIN over those
+    cells) instead of falling back to layer-mean."""
+    # Coverage occupies a single pixel in the bottom-right area; a
+    # corner at (0, 0) finds nothing in 2x2, nothing in 4x4 → falls
+    # back to layer-mean. A corner at (4, 4) finds the covered pixel in
+    # its 4x4 (offsets 2..3, 2..3) → MIN = its depth.
+    H = W = 8
+    coverage = np.zeros((H, W), dtype=bool)
+    coverage[6, 6] = True
+    depth = np.zeros((H, W), dtype=np.float32)
+    depth[6, 6] = HO  # single covered cell at depth HO
+
+    leaves = [QuadtreeLeaf(4, 4, 4, 4, "border")]  # 4x4 leaf containing the cell
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # Leaf has 4 corners at (4,4), (4,8), (8,4), (8,8). All within reach
+    # of the (6, 6) covered cell via the 4×4 stencil — every corner gets
+    # depth = HO → y = ho/2 - HO = -1.
+    assert mesh.vertices.shape == (4, 3)
+    np.testing.assert_allclose(mesh.vertices[:, 1], -1.0, atol=1e-9)
+
+
+def test_displaced_class_inherited_per_triangle():
+    """All tris emitted from one leaf share that leaf's class."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 8, 16, "interior"),
+        QuadtreeLeaf(8, 0, 8, 16, "border"),
+    ]
+    depth, coverage = _flat_depth(16, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    classes = list(mesh.triangle_classes)
+    assert classes.count("interior") == 2
+    assert classes.count("border") == 2
+
+
+def test_displaced_shape_mismatch_rejected():
+    with pytest.raises(ValueError):
+        build_displaced_layer_mesh(
+            leaves=[QuadtreeLeaf(0, 0, 4, 4, "interior")],
+            canonical_depth=np.zeros((4, 4), dtype=np.float32),
+            canonical_coverage=np.ones((8, 8), dtype=bool),
+            half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+        )

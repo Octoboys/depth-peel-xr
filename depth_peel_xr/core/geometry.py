@@ -78,6 +78,40 @@ def super_frustum_projection(
     return canonical_from_centre, canonical_proj
 
 
+def inverse_canonical_projection(
+    u: np.ndarray | float,
+    v: np.ndarray | float,
+    d: np.ndarray | float,
+    half_w_p: float,
+    half_h_p: float,
+    ho: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Inverse of super_frustum_projection: canonical NDC (u, v) at canonical-
+    cam-space depth d → portal-local (x, y, z).
+
+    `d` is positive distance from the canonical apex along its -Z axis — the
+    value stored in `consolidated/layer_NN_depth.exr` (= centre-cam depth -
+    ho/2 for a point at centre-cam depth past the head-plane).
+
+    Frame: canonical apex at portal-local (0, ho/2, 0) — the linear
+    super-frustum surface extrapolated back to zero width meets the centre-
+    cam axis halfway between portal and head-plane. Cam looks toward portal
+    -Y; cam +X = portal -X; cam +Y = portal +Z. So the canonical near plane
+    (d = ho/2 from apex) sits exactly at the portal (y_portal = 0).
+    """
+    if ho <= 0.0:
+        raise ValueError("headplane_offset must be > 0")
+    inv_n = 2.0 / ho  # 1 / (ho/2)
+    x_portal = -u * d * half_w_p * inv_n
+    y_portal = 0.5 * ho - d
+    z_portal =  v * d * half_h_p * inv_n
+    if isinstance(y_portal, float):
+        return x_portal, y_portal, z_portal
+    # Broadcast scalar y to match u/v shape if needed.
+    y_portal = np.broadcast_to(y_portal, np.asarray(x_portal).shape).copy()
+    return x_portal, y_portal, z_portal
+
+
 def super_frustum_canonical_shape(
     layer_near: float,
     centre_width: int,

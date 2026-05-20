@@ -141,3 +141,117 @@ def test_non_bool_mask_is_coerced():
         l.x == 0 and l.y == 0 and l.w == 8 and l.h == 8
         for l in interiors
     )
+
+
+# ---- depth-variance subdivision (slice 2) -----------------------------------
+
+def test_constant_depth_behaves_like_slice_1():
+    """Fully-covered region with zero depth variance should produce the
+    same single interior leaf as slice 1, regardless of tol."""
+    mask = np.ones((64, 64), dtype=bool)
+    depth = np.full((64, 64), 5.0, dtype=np.float32)
+    leaves = build_quadtree(
+        mask, min_quad_size=4, tile_size=64, depth=depth, depth_tol=0.001
+    )
+    assert len(leaves) == 1
+    assert leaves[0] == QuadtreeLeaf(0, 0, 64, 64, "interior")
+
+
+def test_high_variance_subdivides_to_min_size():
+    """Linear depth ramp with tol smaller than the per-leaf range should
+    subdivide all the way down to min_quad_size."""
+    H = W = 32
+    mask = np.ones((H, W), dtype=bool)
+    # Depth ranges 0..1 across the canonical — at min_quad_size=4 the per-
+    # leaf range is 4/32 = 0.125, so tol = 0.05 forces subdivision past
+    # that level entirely (every leaf at min size).
+    depth = np.tile(np.linspace(0.0, 1.0, W, dtype=np.float32), (H, 1))
+    leaves = build_quadtree(
+        mask, min_quad_size=4, tile_size=W, depth=depth, depth_tol=0.05
+    )
+    # Floor leaves are 4-px squares → expect (32/4)^2 = 64 of them.
+    assert len(leaves) == 64
+    assert all(l.cls == "interior" and l.w == 4 and l.h == 4 for l in leaves)
+
+
+def test_tol_threshold_controls_subdivision_density():
+    """Increasing tol reduces leaf count monotonically on the same data."""
+    H = W = 32
+    mask = np.ones((H, W), dtype=bool)
+    depth = np.tile(np.linspace(0.0, 1.0, W, dtype=np.float32), (H, 1))
+    counts = []
+    for tol in (0.05, 0.2, 0.6, 2.0):
+        leaves = build_quadtree(
+            mask, min_quad_size=4, tile_size=W, depth=depth, depth_tol=tol
+        )
+        counts.append(len(leaves))
+    # Strictly non-increasing as tol grows.
+    for a, b in zip(counts, counts[1:]):
+        assert a >= b
+    # tol = 2.0 well above ramp range (= 1.0) → single coarse leaf.
+    assert counts[-1] == 1
+
+
+def test_variance_only_applies_to_full_quads():
+    """Mixed (silhouette) quads still subdivide on coverage rules even when
+    depth tol could in principle be satisfied — variance subdivision is
+    additive, not a replacement."""
+    H = W = 16
+    yy, xx = np.indices((H, W))
+    mask = (xx + yy) < 16  # diagonal silhouette
+    depth = np.zeros((H, W), dtype=np.float32)
+    leaves = build_quadtree(
+        mask, min_quad_size=2, tile_size=W, depth=depth, depth_tol=10.0
+    )
+    # With huge tol, full quads stay coarse; mixed still subdivide → border
+    # leaves at min size.
+    assert any(l.cls == "border" for l in leaves)
+    assert any(l.cls == "interior" for l in leaves)
+
+
+def test_min_size_floor_caps_variance_subdivision():
+    """Even with tiny tol, a leaf at min_quad_size stops subdividing —
+    becomes interior with whatever variance is left over."""
+    mask = np.ones((4, 4), dtype=bool)
+    depth = np.array(
+        [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]],
+        dtype=np.float32,
+    )
+    leaves = build_quadtree(
+        mask, min_quad_size=4, tile_size=4, depth=depth, depth_tol=0.01
+    )
+    # 4x4 IS min_quad_size → emit one interior leaf at floor regardless of
+    # variance.
+    assert len(leaves) == 1
+    assert leaves[0].cls == "interior"
+
+
+def test_depth_tol_negative_rejected():
+    with pytest.raises(ValueError):
+        build_quadtree(
+            np.ones((8, 8), dtype=bool),
+            min_quad_size=4,
+            depth=np.zeros((8, 8), dtype=np.float32),
+            depth_tol=-0.1,
+        )
+
+
+def test_depth_shape_mismatch_rejected():
+    with pytest.raises(ValueError):
+        build_quadtree(
+            np.ones((8, 8), dtype=bool),
+            min_quad_size=4,
+            depth=np.zeros((4, 4), dtype=np.float32),
+            depth_tol=0.1,
+        )
+
+
+def test_depth_without_tol_falls_back_to_slice_1():
+    """Passing depth alone (no tol) must not change slice-1 behaviour."""
+    mask = np.ones((32, 32), dtype=bool)
+    depth = np.tile(np.linspace(0.0, 100.0, 32, dtype=np.float32), (32, 1))
+    leaves_no_variance = build_quadtree(mask, min_quad_size=4, tile_size=32)
+    leaves_depth_only = build_quadtree(
+        mask, min_quad_size=4, tile_size=32, depth=depth, depth_tol=None
+    )
+    assert leaves_no_variance == leaves_depth_only

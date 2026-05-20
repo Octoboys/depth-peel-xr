@@ -7,6 +7,7 @@ import pytest
 
 from core.geometry import (
     centre_frustum_half_extents,
+    inverse_canonical_projection,
     super_frustum_canonical_shape,
     super_frustum_half_extents,
     super_frustum_projection,
@@ -128,3 +129,57 @@ def test_canonical_shape_caps_below_double():
     w, h = super_frustum_canonical_shape(1000 * HO, 1024, 512, HALF_W_P, HALF_H_P, HO)
     assert w <= 2048 and h <= 1024
     assert w > 2040 and h > 1020  # very close to 2x
+
+
+# ---- inverse_canonical_projection -------------------------------------------
+
+def test_inverse_canonical_round_trip_against_super_proj():
+    """Canonical NDC → portal-local → centre-cam → canonical NDC must be
+    identity for points the canonical can frame (d_can >= near)."""
+    cfc, proj = super_frustum_projection(HALF_W_P, HALF_H_P, HO)
+    centre_to_canonical = cfc  # cfc IS canonical_from_centre
+    for u, v, d in [(0.0, 0.0, HO), (0.5, -0.3, 1.5 * HO), (-1.0, 1.0, 2 * HO)]:
+        x, y, z = inverse_canonical_projection(u, v, d, HALF_W_P, HALF_H_P, HO)
+        # Portal-local → centre-cam (centre cam at y=ho looking -Y; cam +X
+        # = portal -X; cam +Y = portal +Z; cam +Z = portal +Y).
+        cam_x = -x
+        cam_y =  z
+        cam_z =  y - HO  # portal-local y minus centre-cam height
+        p_can = _centre_to_canonical(centre_to_canonical, np.array([cam_x, cam_y, cam_z]))
+        ndc = _project(proj, p_can)
+        assert ndc[0] == pytest.approx(u, abs=1e-9)
+        assert ndc[1] == pytest.approx(v, abs=1e-9)
+
+
+def test_inverse_canonical_near_plane_is_portal():
+    """At d = ho/2 (canonical near), inverse projection lands on the portal
+    plane (y_portal = 0); NDC ±1 reaches portal half-extents."""
+    x, y, z = inverse_canonical_projection(1.0, 1.0, HO * 0.5, HALF_W_P, HALF_H_P, HO)
+    assert y == pytest.approx(0.0, abs=1e-9)
+    assert x == pytest.approx(-HALF_W_P, abs=1e-9)
+    assert z == pytest.approx(+HALF_H_P, abs=1e-9)
+
+
+def test_inverse_canonical_apex_at_zero_depth():
+    """At d = 0 the inverse should land on the apex (origin x, z; y = ho/2)
+    regardless of NDC."""
+    for u, v in [(0.0, 0.0), (1.0, -1.0), (-0.5, 0.7)]:
+        x, y, z = inverse_canonical_projection(u, v, 0.0, HALF_W_P, HALF_H_P, HO)
+        assert x == pytest.approx(0.0, abs=1e-9)
+        assert y == pytest.approx(0.5 * HO, abs=1e-9)
+        assert z == pytest.approx(0.0, abs=1e-9)
+
+
+def test_inverse_canonical_vectorised():
+    """Numpy inputs of matching shape produce same-shape (x, y, z) outputs."""
+    u = np.array([[-1.0, 0.0, 1.0]])
+    v = np.array([[1.0, 0.0, -1.0]])
+    d = np.array([[HO, HO, HO]])
+    x, y, z = inverse_canonical_projection(u, v, d, HALF_W_P, HALF_H_P, HO)
+    assert x.shape == (1, 3) and y.shape == (1, 3) and z.shape == (1, 3)
+    np.testing.assert_allclose(y, [[0.5 * HO - HO, 0.5 * HO - HO, 0.5 * HO - HO]])
+
+
+def test_inverse_canonical_rejects_zero_ho():
+    with pytest.raises(ValueError):
+        inverse_canonical_projection(0.0, 0.0, 1.0, HALF_W_P, HALF_H_P, 0.0)

@@ -40,6 +40,8 @@ restored).
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 
@@ -48,6 +50,177 @@ import numpy as np
 # miss pixels alpha=0; the threshold sits comfortably above the bilinear
 # anti-aliased boundary.
 COVERAGE_ALPHA_THRESHOLD = 0.5
+
+
+def _morph_erode_box(mask: np.ndarray) -> np.ndarray:
+    """3×3 box erosion: pixel survives if itself and all 8 neighbours
+    are covered. Out-of-bounds treated as **covered** so genuine canvas-
+    edge coverage isn't artificially eroded — only interior boundaries
+    against uncovered space erode."""
+    H, W = mask.shape
+    pc = np.ones((H + 2, W + 2), dtype=bool)
+    pc[1 : H + 1, 1 : W + 1] = mask
+    result = np.ones((H, W), dtype=bool)
+    for s in range(3):
+        for t in range(3):
+            result &= pc[s : s + H, t : t + W]
+    return result
+
+
+def _morph_dilate_box(mask: np.ndarray) -> np.ndarray:
+    """3×3 box dilation: pixel becomes covered if itself or any 8-
+    neighbour is covered. Out-of-bounds treated as uncovered (dilation
+    only adds from real coverage, never from OOB)."""
+    H, W = mask.shape
+    pc = np.zeros((H + 2, W + 2), dtype=bool)
+    pc[1 : H + 1, 1 : W + 1] = mask
+    result = np.zeros((H, W), dtype=bool)
+    for s in range(3):
+        for t in range(3):
+            result |= pc[s : s + H, t : t + W]
+    return result
+
+
+def _median_fill(
+    rgba: np.ndarray,
+    depth: np.ndarray,
+    source_basis: np.ndarray,
+    targets: np.ndarray,
+    new_rgba: np.ndarray,
+    new_depth: np.ndarray,
+    new_source: np.ndarray,
+) -> None:
+    """Replace `targets` pixels in (new_rgba, new_depth) with the 3×3
+    median over `source_basis`-covered neighbours of (rgba, depth).
+    Marks new_source[targets] = 255 (synthesised sentinel). In-place.
+
+    Only computes medians at the target pixels (typically a tiny subset
+    of the canonical), not the full image — a full-image nanmedian is
+    O(H·W·9) and was the bottleneck of the consolidate pass."""
+    if not targets.any():
+        return
+
+    H, W = depth.shape
+    pad_d = np.full((H + 2, W + 2), np.nan, dtype=np.float32)
+    pad_d[1 : H + 1, 1 : W + 1] = np.where(source_basis, depth, np.nan)
+    pad_r = np.full((H + 2, W + 2, 4), np.nan, dtype=np.float32)
+    pad_r[1 : H + 1, 1 : W + 1] = np.where(source_basis[..., None], rgba, np.nan)
+
+    ty, tx = np.where(targets)
+    n = ty.size
+    d_neighbours = np.empty((n, 9), dtype=np.float32)
+    r_neighbours = np.empty((n, 9, 4), dtype=np.float32)
+    idx = 0
+    for s in range(3):
+        for t in range(3):
+            d_neighbours[:, idx] = pad_d[ty + s, tx + t]
+            r_neighbours[:, idx, :] = pad_r[ty + s, tx + t, :]
+            idx += 1
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+        d_med = np.nanmedian(d_neighbours, axis=-1)
+        r_med = np.nanmedian(r_neighbours, axis=-2)
+
+    finite = np.isfinite(d_med)
+    if not finite.any():
+        return
+    ty_apply = ty[finite]
+    tx_apply = tx[finite]
+    new_depth[ty_apply, tx_apply] = d_med[finite]
+    new_rgba[ty_apply, tx_apply] = r_med[finite]
+    new_rgba[ty_apply, tx_apply, 3] = 1.0
+    new_source[ty_apply, tx_apply] = 255
+
+
+def _remove_single_pixel_anomalies(
+    rgba: np.ndarray,
+    depth: np.ndarray,
+    coverage: np.ndarray,
+    source_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Three-stage cleanup of forward-splat anomalies in the canonical:
+
+    1. **Source specks** — covered pixel whose source view differs from
+       every covered 4-neighbour (with ≥3 covered neighbours). Replace
+       colour and depth with the 3×3 median over covered neighbours,
+       keep coverage. Catches 1-pixel sibling-fills inside otherwise
+       centre-dominated regions.
+    2. **Morphological opening (3×3 box)** — drop covered blobs of size
+       2×2 or smaller in the negative space. Catches isolated forward-
+       splat strays that the source check misses (because their 4-
+       neighbours are also uncovered, no source disagreement to detect).
+    3. **Morphological closing (3×3 box)** — fill 1-pixel-wide holes
+       and thin lines in the positive space. Catches NDC-rounding gaps
+       where no view's reprojection landed at a canonical pixel, and
+       pixel-thin gaps along depth-plane cuts where the layer's clip
+       boundary sliced through scene geometry.
+
+    Real silhouette boundaries (multi-pixel transitions) and ≥3×3
+    covered blobs survive both morphological steps untouched.
+    """
+    H, W = depth.shape
+    if H == 0 or W == 0:
+        return rgba, depth, coverage, source_mask
+
+    # 4-neighbour counts (used for stage 1 detection).
+    pad_c = np.zeros((H + 2, W + 2), dtype=bool)
+    pad_c[1 : H + 1, 1 : W + 1] = coverage
+    nb_c_top = pad_c[0:H, 1 : W + 1]
+    nb_c_bot = pad_c[2 : H + 2, 1 : W + 1]
+    nb_c_left = pad_c[1 : H + 1, 0:W]
+    nb_c_right = pad_c[1 : H + 1, 2 : W + 2]
+    n_cov_4nb = (
+        nb_c_top.astype(np.int32) + nb_c_bot + nb_c_left + nb_c_right
+    )
+
+    # Stage 1: source-disagreement specks.
+    pad_s = np.full((H + 2, W + 2), 0xFFFF, dtype=np.uint16)
+    pad_s[1 : H + 1, 1 : W + 1] = source_mask
+    self_s = source_mask.astype(np.uint16)
+    matches_top = (pad_s[0:H, 1 : W + 1] == self_s) & nb_c_top
+    matches_bot = (pad_s[2 : H + 2, 1 : W + 1] == self_s) & nb_c_bot
+    matches_left = (pad_s[1 : H + 1, 0:W] == self_s) & nb_c_left
+    matches_right = (pad_s[1 : H + 1, 2 : W + 2] == self_s) & nb_c_right
+    n_match = (
+        matches_top.astype(np.int32) + matches_bot + matches_left + matches_right
+    )
+    source_specks = coverage & (n_cov_4nb >= 3) & (n_match == 0)
+
+    new_rgba = rgba.copy()
+    new_depth = depth.copy()
+    new_source = source_mask.copy()
+
+    if source_specks.any():
+        _median_fill(
+            rgba, depth, coverage, source_specks,
+            new_rgba, new_depth, new_source,
+        )
+
+    # Stage 2: morphological opening — drop ≤2×2 covered blobs.
+    opened = _morph_dilate_box(_morph_erode_box(coverage))
+    dropped = coverage & ~opened
+    if dropped.any():
+        new_rgba[dropped] = 0.0
+        new_depth[dropped] = 0.0
+        new_source[dropped] = 0
+
+    # Stage 3: morphological closing — fill 1-pixel holes / thin lines.
+    closed = _morph_erode_box(_morph_dilate_box(opened))
+    filled = closed & ~opened
+
+    new_coverage = closed
+    if filled.any():
+        # Fill from the OPENED coverage (post stage-2) so we don't
+        # propagate spec values into the holes.
+        opened_depth = np.where(opened, new_depth, 0.0)
+        opened_rgba = np.where(opened[..., None], new_rgba, 0.0)
+        _median_fill(
+            opened_rgba, opened_depth, opened, filled,
+            new_rgba, new_depth, new_source,
+        )
+
+    return new_rgba, new_depth, new_coverage, new_source
 
 
 def _ndc_grid(width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
@@ -241,5 +414,17 @@ def consolidate_layer(
 
     # Force alpha=0 where uncovered for downstream coverage reads.
     canonical_rgba[..., 3] = np.where(coverage_mask, canonical_rgba[..., 3], 0.0)
+
+    # Clean up single-pixel forward-splat anomalies that NDC rounding
+    # leaves behind: source-disagreement specks (covered pixel filled by
+    # a different view than its neighbours), holes (uncovered pixel
+    # surrounded by covered), and strays (covered pixel surrounded by
+    # uncovered). Targets only truly isolated single-pixel patterns so
+    # real silhouette edges aren't touched.
+    canonical_rgba, canonical_depth, coverage_mask, source_mask = (
+        _remove_single_pixel_anomalies(
+            canonical_rgba, canonical_depth, coverage_mask, source_mask
+        )
+    )
 
     return canonical_rgba, canonical_depth, coverage_mask, source_mask

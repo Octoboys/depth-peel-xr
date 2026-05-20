@@ -150,6 +150,7 @@ class DEPTHPEELXR_PT_main(Panel):
             recon = scene.dpx_reconstruction
             col.prop(recon, "min_quad_size")
             col.prop(recon, "max_quad_size")
+            col.prop(recon, "depth_gradient_tol")
             simple_ready = expected_captures_present(context)
             quadtree_ready = consolidated_present(context)
             col.separator()
@@ -176,6 +177,14 @@ class DEPTHPEELXR_PT_main(Panel):
                 "depthpeelxr.reconstruct_flat",
                 text="Build Quadtree Planes",
                 icon="MOD_REMESH",
+            )
+            col.separator()
+            displaced_row = col.row(align=True)
+            displaced_row.enabled = quadtree_ready
+            displaced_row.operator(
+                "depthpeelxr.reconstruct_displaced",
+                text="Build Displaced Planes",
+                icon="RNDCURVE",
             )
             col.separator()
             col.operator(

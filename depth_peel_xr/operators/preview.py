@@ -72,7 +72,11 @@ def _build_preview_mesh(name: str, half_w: float, half_h: float, y: float):
         ( half_w, y,  half_h),
         (-half_w, y,  half_h),
     ]
-    faces = [(0, 1, 2, 3)]
+    # Reverse winding so the face normal points portal-local +Y (toward
+    # head-plane / viewer). The mesh is parented to the portal with
+    # identity parent_inverse, so mesh-local axes coincide with portal-
+    # local — rotating the portal rotates the normal with it.
+    faces = [(0, 3, 2, 1)]
     mesh.from_pydata(verts, [], faces)
     # Centre camera: image right = portal-local -X (per camera_local_rotation_4x4),
     # image up = +Z. EXR pixel (0,0) is bottom-left of image = (+X, -Z) vertex.
