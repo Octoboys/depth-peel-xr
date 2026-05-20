@@ -183,18 +183,19 @@ def _build_displaced_recon_mesh_object(
     coll,
 ) -> bpy.types.Object:
     """Slice-2 counterpart of `_build_recon_mesh_object` for the
-    triangle-based `DisplacedLayerMesh`. Verts are shared across tris
-    so a single vert can belong to both interior and border vertex
-    groups — both groups are assigned independently, last-write-wins."""
+    polygon-based `DisplacedLayerMesh` (one quad per fast-path leaf,
+    one n-gon per slow-path / T-junction leaf). Verts are shared across
+    polygons so a single vert can belong to both interior and border
+    vertex groups — both groups are assigned independently."""
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(
-        mesh_arrays.vertices.tolist(), [], mesh_arrays.triangles.tolist()
+        mesh_arrays.vertices.tolist(), [], mesh_arrays.polygons
     )
     mesh.update()
 
     uv_layer = mesh.uv_layers.new(name="UVMap")
     flat_uvs = np.ascontiguousarray(
-        mesh_arrays.triangle_uvs.reshape(-1), dtype=np.float32
+        mesh_arrays.poly_uvs.reshape(-1), dtype=np.float32
     )
     uv_layer.data.foreach_set("uv", flat_uvs)
 
@@ -209,9 +210,9 @@ def _build_displaced_recon_mesh_object(
     border_group = obj.vertex_groups.new(name="border")
     interior_verts: set[int] = set()
     border_verts: set[int] = set()
-    for ti, cls in enumerate(mesh_arrays.triangle_classes):
+    for poly, cls in zip(mesh_arrays.polygons, mesh_arrays.poly_classes):
         bucket = interior_verts if cls == "interior" else border_verts
-        for vi in mesh_arrays.triangles[ti]:
+        for vi in poly:
             bucket.add(int(vi))
     if interior_verts:
         interior_group.add(list(interior_verts), 1.0, "REPLACE")
@@ -224,7 +225,7 @@ def _build_displaced_recon_mesh_object(
 class DEPTHPEELXR_OT_reconstruct_flat(Operator):
     bl_idname = "depthpeelxr.reconstruct_flat"
     bl_label = "Build Quadtree Planes"
-    bl_description = "Build per-layer adaptive-quadtree planes with silhouette-cut borders (no displacement)"
+    bl_description = "Per-layer planes with reduced overdraw"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -315,11 +316,8 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
 
 class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
     bl_idname = "depthpeelxr.reconstruct_displaced"
-    bl_label = "Build Displaced Planes"
-    bl_description = (
-        "Build per-layer adaptive-quadtree meshes with per-vertex "
-        "displacement and depth-variance-driven subdivision"
-    )
+    bl_label = "Build Displaced Quadtree"
+    bl_description = "Per-layer quadtree meshes displaced to scene depth"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -367,7 +365,7 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
 
         run_t0 = perf_counter()
         _log(
-            f"# Build Displaced Planes profile — "
+            f"# Build Displaced Quadtree profile — "
             f"min={min_quad_size}, max={max_quad_size}, tol={depth_tol:.3f}"
         )
 
@@ -379,7 +377,7 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
         half_h_p = rig.portal_height * 0.5
 
         built = 0
-        total_tris = 0
+        total_polys = 0
         for li, layer in enumerate(lp.layers):
             color_path = _layer_color_exr(consolidated, li)
             depth_path = _layer_depth_exr(consolidated, li)
@@ -437,16 +435,16 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
 
             n_leaves = len(leaves)
             n_verts = int(mesh_arrays.vertices.shape[0])
-            n_tris = int(mesh_arrays.triangles.shape[0])
+            n_polys = len(mesh_arrays.polygons)
             _log(
                 f"layer {li:02d}  canonical={W}x{H}  "
-                f"leaves={n_leaves}  verts={n_verts}  tris={n_tris}  | "
+                f"leaves={n_leaves}  verts={n_verts}  polys={n_polys}  | "
                 f"load={t_load:.3f}s  quadtree={t_quadtree:.3f}s  "
                 f"core_mesh={t_meshcore:.3f}s  bpy_handoff={t_bpy:.3f}s"
             )
 
             built += 1
-            total_tris += n_tris
+            total_polys += n_polys
 
         if built == 0:
             self.report({"ERROR"}, "No consolidated layers found")
@@ -456,7 +454,7 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
         run_total = perf_counter() - run_t0
         _log(f"# total wall time: {run_total:.3f}s for {built} layer(s)")
         info = (
-            f"Built {built} displaced layer(s), {total_tris} triangle(s) "
+            f"Built {built} displaced layer(s), {total_polys} polygon(s) "
             f"total in {run_total:.2f}s"
         )
         if profile_log is not None:

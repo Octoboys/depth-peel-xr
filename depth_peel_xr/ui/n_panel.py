@@ -183,7 +183,7 @@ class DEPTHPEELXR_PT_main(Panel):
             displaced_row.enabled = quadtree_ready
             displaced_row.operator(
                 "depthpeelxr.reconstruct_displaced",
-                text="Build Displaced Planes",
+                text="Build Displaced Quadtree",
                 icon="RNDCURVE",
             )
             col.separator()

@@ -59,18 +59,25 @@ class DisplacedLayerMesh:
     vertices: (N, 3) float64, portal-local. One row per unique canonical
       pixel-corner across all leaves (verts shared between adjacent
       leaves and T-junction-mid-edges).
-    triangles: (M, 3) int64, per-tri vertex indices. Variable count per
-      leaf because fan triangulation through mid-edge verts produces a
-      different number of tris depending on T-junction density.
-    triangle_uvs: (M, 3, 2) float64, per-loop UV in canonical pixel-
-      coord space.
-    triangle_classes: (M,) object array of 'interior' / 'border'. Per-
-      triangle, inherited from the leaf that emitted the tri.
+    polygons: list of int tuples — one polygon per leaf. Fast-path
+      leaves emit a 4-vert quad in pixel-CCW order (TL, BL, BR, TR);
+      slow-path (T-junction) leaves emit an n-vert polygon that walks
+      the leaf's perimeter through any mid-edge verts owned by smaller
+      neighbours. Emitting quads/n-gons (rather than fan-triangulated
+      tris) means Blender's wireframe overlay shows only the polygon
+      boundary, not the internal triangulation diagonal — matches the
+      artist's mental model of "one quad per leaf".
+    poly_uvs: (sum(len(p) for p in polygons), 2) float64. Per-loop UV
+      laid out in poly-then-corner order — matches Blender's mesh-loops
+      layout after `mesh.from_pydata`, so a single `foreach_set("uv",
+      flat_uvs)` call suffices.
+    poly_classes: (P,) object array of 'interior' / 'border' inherited
+      from the leaf that emitted the polygon.
     """
     vertices: np.ndarray
-    triangles: np.ndarray
-    triangle_uvs: np.ndarray
-    triangle_classes: np.ndarray
+    polygons: list[tuple[int, ...]]
+    poly_uvs: np.ndarray
+    poly_classes: np.ndarray
 
 
 def build_layer_mesh(
@@ -234,9 +241,9 @@ def build_displaced_layer_mesh(
     if not leaves:
         return DisplacedLayerMesh(
             vertices=np.empty((0, 3), dtype=np.float64),
-            triangles=np.empty((0, 3), dtype=np.int64),
-            triangle_uvs=np.empty((0, 3, 2), dtype=np.float64),
-            triangle_classes=np.empty(0, dtype=object),
+            polygons=[],
+            poly_uvs=np.empty((0, 2), dtype=np.float64),
+            poly_classes=np.empty(0, dtype=object),
         )
 
     corner_depth, corner_valid = _compute_corner_depths(
@@ -375,12 +382,15 @@ def build_displaced_layer_mesh(
     )
     vertices = np.stack([x_p, y_p, z_p], axis=-1).astype(np.float64)
 
-    # Pass 2: triangulate. Split into a fast path (no T-junctions) that
-    # runs fully vectorised in numpy, and a slow path (T-junction leaves)
-    # that keeps the per-leaf Python polygon walk.
+    # Pass 2: emit one polygon per leaf — quad (4 verts) for fast-path
+    # leaves with no T-junctions, n-gon for slow-path leaves whose
+    # perimeter walks through smaller neighbours' mid-edge verts. Blender
+    # tessellates n-gons internally at draw time but only draws the
+    # polygon boundary in wireframe — so the artist sees one quad per
+    # leaf instead of the diagonal of an explicit fan triangulation.
     inv_w = 1.0 / W
     inv_h = 1.0 / H
-    # Per-vert UV table — indexed once and reused for every triangle.
+    # Per-vert UV table — indexed once and reused for every polygon-loop.
     vert_uvs = np.empty((pixel_coords.shape[0], 2), dtype=np.float64)
     vert_uvs[:, 0] = pixel_coords[:, 0] * inv_w
     vert_uvs[:, 1] = 1.0 - pixel_coords[:, 1] * inv_h
@@ -408,35 +418,31 @@ def build_displaced_layer_mesh(
     )
     has_tj = (top_extras + bot_extras + left_extras + right_extras) > 0
 
-    # ---- Fast path: leaves without T-junctions emit exactly 2 tris each.
     leaf_classes_arr = np.array(
         [leaf.cls for leaf in leaves], dtype=object
     )
+
+    # ---- Fast path: no-T-junction leaves emit one quad each.
     fast_idx = np.flatnonzero(~has_tj)
     n_fast = fast_idx.size
+    fast_polygons: list[tuple[int, ...]] = []
     if n_fast:
         fast_corners = leaf_corner_indices_arr[fast_idx]  # (n_fast, 4) [TL, BL, BR, TR]
-        fast_tris = np.empty((n_fast * 2, 3), dtype=np.int64)
-        # Tri 0 per leaf: TL → BL → BR.
-        fast_tris[0::2, 0] = fast_corners[:, 0]
-        fast_tris[0::2, 1] = fast_corners[:, 1]
-        fast_tris[0::2, 2] = fast_corners[:, 2]
-        # Tri 1 per leaf: TL → BR → TR.
-        fast_tris[1::2, 0] = fast_corners[:, 0]
-        fast_tris[1::2, 1] = fast_corners[:, 2]
-        fast_tris[1::2, 2] = fast_corners[:, 3]
-        fast_tri_uvs = vert_uvs[fast_tris]  # (n_fast * 2, 3, 2)
-        fast_classes = np.repeat(leaf_classes_arr[fast_idx], 2)
+        # Each row IS the polygon's vert sequence in pixel-CCW order.
+        fast_polygons = [
+            (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
+            for row in fast_corners
+        ]
+        # Per-loop UVs: 4 loops per quad, in TL, BL, BR, TR order.
+        fast_loop_uvs = vert_uvs[fast_corners.reshape(-1)]  # (n_fast * 4, 2)
+        fast_classes = leaf_classes_arr[fast_idx]
     else:
-        fast_tris = np.empty((0, 3), dtype=np.int64)
-        fast_tri_uvs = np.empty((0, 3, 2), dtype=np.float64)
+        fast_loop_uvs = np.empty((0, 2), dtype=np.float64)
         fast_classes = np.empty(0, dtype=object)
 
-    # ---- Slow path: leaves with T-junctions walk the polygon and fan-tri.
-    slow_tris: list[tuple[int, int, int]] = []
-    slow_uvs: list[
-        tuple[tuple[float, float], tuple[float, float], tuple[float, float]]
-    ] = []
+    # ---- Slow path: T-junction leaves walk the polygon and emit one n-gon each.
+    slow_polygons: list[tuple[int, ...]] = []
+    slow_loop_uvs_list: list[np.ndarray] = []
     slow_classes: list[str] = []
     slow_idx = np.flatnonzero(has_tj)
     for li in slow_idx:
@@ -445,8 +451,7 @@ def build_displaced_layer_mesh(
         x1, y1 = leaf.x + leaf.w, leaf.y + leaf.h
         # Polygon vert indices in pixel-CCW order: TL → left-extras (T→B)
         # → BL → bottom-extras (L→R) → BR → right-extras (B→T) → TR →
-        # top-extras (R→L). Pixel-CCW makes the fan normal point portal-
-        # local +Y.
+        # top-extras (R→L). Pixel-CCW gives a portal-local +Y normal.
         poly_idx: list[int] = [int(leaf_corner_indices_arr[li, 0])]  # TL
         for py in ys_at_x.get(x0, ()):
             if y0 < py < y1:
@@ -463,36 +468,23 @@ def build_displaced_layer_mesh(
         for px in reversed(xs_at_y.get(y0, ())):
             if x0 < px < x1:
                 poly_idx.append(corner_idx[(int(px), y0)])
+        slow_polygons.append(tuple(poly_idx))
+        slow_loop_uvs_list.append(vert_uvs[poly_idx])
+        slow_classes.append(leaf.cls)
 
-        v0 = poly_idx[0]
-        v0_uv = (float(vert_uvs[v0, 0]), float(vert_uvs[v0, 1]))
-        cls = leaf.cls
-        for i in range(1, len(poly_idx) - 1):
-            v1 = poly_idx[i]
-            v2 = poly_idx[i + 1]
-            slow_tris.append((v0, v1, v2))
-            slow_uvs.append((
-                v0_uv,
-                (float(vert_uvs[v1, 0]), float(vert_uvs[v1, 1])),
-                (float(vert_uvs[v2, 0]), float(vert_uvs[v2, 1])),
-            ))
-            slow_classes.append(cls)
-
-    if slow_tris:
-        slow_tris_arr = np.asarray(slow_tris, dtype=np.int64)
-        slow_uvs_arr = np.asarray(slow_uvs, dtype=np.float64)
+    polygons = fast_polygons + slow_polygons
+    if slow_loop_uvs_list:
+        slow_loop_uvs = np.concatenate(slow_loop_uvs_list, axis=0)
+        poly_uvs = np.concatenate([fast_loop_uvs, slow_loop_uvs], axis=0)
         slow_classes_arr = np.asarray(slow_classes, dtype=object)
-        triangles = np.concatenate([fast_tris, slow_tris_arr])
-        triangle_uvs = np.concatenate([fast_tri_uvs, slow_uvs_arr])
-        triangle_classes = np.concatenate([fast_classes, slow_classes_arr])
+        poly_classes = np.concatenate([fast_classes, slow_classes_arr])
     else:
-        triangles = fast_tris
-        triangle_uvs = fast_tri_uvs
-        triangle_classes = fast_classes
+        poly_uvs = fast_loop_uvs
+        poly_classes = fast_classes
 
     return DisplacedLayerMesh(
         vertices=vertices,
-        triangles=triangles,
-        triangle_uvs=triangle_uvs,
-        triangle_classes=triangle_classes,
+        polygons=polygons,
+        poly_uvs=poly_uvs,
+        poly_classes=poly_classes,
     )

@@ -188,7 +188,7 @@ def invalidate_flat_preview(context) -> None:
 class DEPTHPEELXR_OT_preview_flat(Operator):
     bl_idname = "depthpeelxr.preview_flat"
     bl_label = "Build Simple Planes"
-    bl_description = "Build one flat alpha-cut plane per layer from the centre-view capture (no silhouette subdivision)"
+    bl_description = "Per-layer flat planes with alpha cutouts (preview only)"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod

@@ -132,11 +132,11 @@ def test_displaced_empty_leaf_list_returns_empty_arrays():
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
     assert mesh.vertices.shape == (0, 3)
-    assert mesh.triangles.shape == (0, 3)
-    assert mesh.triangle_uvs.shape == (0, 3, 2)
+    assert mesh.polygons == []
+    assert mesh.poly_uvs.shape == (0, 2)
 
 
-def test_displaced_single_leaf_at_constant_depth_produces_two_tris():
+def test_displaced_single_leaf_at_constant_depth_emits_one_quad():
     leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
     depth, coverage = _flat_depth(16, 16, HO)  # d = HO → portal-local y = -HO/2
     mesh = build_displaced_layer_mesh(
@@ -145,10 +145,11 @@ def test_displaced_single_leaf_at_constant_depth_produces_two_tris():
         canonical_coverage=coverage,
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
-    # 4 unique corners → 4 verts; fan from TL → 2 tris.
+    # 4 unique corners → 4 verts; one quad polygon.
     assert mesh.vertices.shape == (4, 3)
-    assert mesh.triangles.shape == (2, 3)
-    assert all(cls == "interior" for cls in mesh.triangle_classes)
+    assert len(mesh.polygons) == 1
+    assert len(mesh.polygons[0]) == 4
+    assert all(cls == "interior" for cls in mesh.poly_classes)
     # All verts at the same y_portal = ho/2 - d = 1 - 2 = -1.
     np.testing.assert_allclose(mesh.vertices[:, 1], -1.0, atol=1e-9)
 
@@ -168,15 +169,15 @@ def test_displaced_two_same_size_leaves_share_edge_verts():
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
     assert mesh.vertices.shape == (6, 3)
-    # 2 leaves × 2 fan tris each = 4 tris (no T-junction, no extras).
-    assert mesh.triangles.shape == (4, 3)
+    # 2 leaves → 2 quads (no T-junctions).
+    assert len(mesh.polygons) == 2
+    assert all(len(p) == 4 for p in mesh.polygons)
 
 
 def test_displaced_t_junction_inserts_mid_edge_vert_into_big_leaf():
     """One big leaf next to two stacked small leaves on its right edge:
     the mid-edge vert (x=16, y=8) appears in BOTH leaves' polygons. Big
-    leaf's polygon has 5 verts → 3 fan tris; each small leaf has 4 verts
-    → 2 fan tris. Total 7 tris."""
+    leaf becomes a 5-vert n-gon; each small leaf is a 4-vert quad."""
     leaves = [
         QuadtreeLeaf(0, 0, 16, 16, "interior"),  # big left
         QuadtreeLeaf(16, 0, 16, 8, "interior"),  # small top-right
@@ -194,9 +195,10 @@ def test_displaced_t_junction_inserts_mid_edge_vert_into_big_leaf():
     #                 (16,8) ← T-junction vert.
     # = 8 verts.
     assert mesh.vertices.shape == (8, 3)
-    # Big leaf's polygon: TL(0,0), TR(16,0), R-extra(16,8), BR(16,16), BL(0,16) = 5 → 3 tris.
-    # Each small leaf: 4 verts → 2 tris.
-    assert mesh.triangles.shape == (3 + 2 + 2, 3)
+    # Polygons: big leaf is the 5-vert n-gon, two small leaves are quads.
+    assert len(mesh.polygons) == 3
+    poly_lens = sorted(len(p) for p in mesh.polygons)
+    assert poly_lens == [4, 4, 5]
 
 
 def test_displaced_t_junction_no_cracks_between_neighbours():
@@ -240,8 +242,9 @@ def test_displaced_per_vertex_depth_via_inverse_projection():
     np.testing.assert_allclose(mesh.vertices[0, 2], 4.0, atol=1e-9)
 
 
-def test_displaced_fan_winding_normal_points_plus_y():
-    """First triangle's winding gives +Y normal (toward head-plane viewer)."""
+def test_displaced_polygon_winding_normal_points_plus_y():
+    """First three verts of the first polygon give +Y normal (pixel-CCW
+    polygon walk → portal-local +Y face)."""
     leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
     depth, coverage = _flat_depth(16, 16, HO)
     mesh = build_displaced_layer_mesh(
@@ -250,16 +253,17 @@ def test_displaced_fan_winding_normal_points_plus_y():
         canonical_coverage=coverage,
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
-    tri = mesh.triangles[0]
-    v0 = mesh.vertices[tri[0]]
-    v1 = mesh.vertices[tri[1]]
-    v2 = mesh.vertices[tri[2]]
+    poly = mesh.polygons[0]
+    v0 = mesh.vertices[poly[0]]
+    v1 = mesh.vertices[poly[1]]
+    v2 = mesh.vertices[poly[2]]
     normal = np.cross(v1 - v0, v2 - v0)
     assert normal[1] > 0
 
 
 def test_displaced_uvs_screen_space_passthrough():
-    """Each triangle vertex's UV equals (px/W, 1 - py/H) for that vert."""
+    """Each polygon-loop UV equals (px/W, 1 - py/H) for that vert. For a
+    quad in pixel-CCW order: TL (0, 1), BL (0, 0), BR (1, 0), TR (1, 1)."""
     leaves = [QuadtreeLeaf(0, 0, 16, 16, "interior")]
     depth, coverage = _flat_depth(16, 16, HO)
     mesh = build_displaced_layer_mesh(
@@ -268,10 +272,10 @@ def test_displaced_uvs_screen_space_passthrough():
         canonical_coverage=coverage,
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
-    # First tri (TL, BL, BR) in pixel-CCW: UVs (0, 1), (0, 0), (1, 0).
-    np.testing.assert_allclose(mesh.triangle_uvs[0, 0], [0.0, 1.0], atol=1e-9)
-    np.testing.assert_allclose(mesh.triangle_uvs[0, 1], [0.0, 0.0], atol=1e-9)
-    np.testing.assert_allclose(mesh.triangle_uvs[0, 2], [1.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(mesh.poly_uvs[0], [0.0, 1.0], atol=1e-9)  # TL
+    np.testing.assert_allclose(mesh.poly_uvs[1], [0.0, 0.0], atol=1e-9)  # BL
+    np.testing.assert_allclose(mesh.poly_uvs[2], [1.0, 0.0], atol=1e-9)  # BR
+    np.testing.assert_allclose(mesh.poly_uvs[3], [1.0, 1.0], atol=1e-9)  # TR
 
 
 def test_displaced_invalid_corners_use_leaf_local_mean():
@@ -436,8 +440,8 @@ def test_displaced_dilate_fallback_finds_far_neighbour():
     np.testing.assert_allclose(mesh.vertices[:, 1], -1.0, atol=1e-9)
 
 
-def test_displaced_class_inherited_per_triangle():
-    """All tris emitted from one leaf share that leaf's class."""
+def test_displaced_class_inherited_per_polygon():
+    """Each polygon (one per leaf) carries that leaf's class."""
     leaves = [
         QuadtreeLeaf(0, 0, 8, 16, "interior"),
         QuadtreeLeaf(8, 0, 8, 16, "border"),
@@ -449,9 +453,9 @@ def test_displaced_class_inherited_per_triangle():
         canonical_coverage=coverage,
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
-    classes = list(mesh.triangle_classes)
-    assert classes.count("interior") == 2
-    assert classes.count("border") == 2
+    classes = list(mesh.poly_classes)
+    assert classes.count("interior") == 1
+    assert classes.count("border") == 1
 
 
 def test_displaced_shape_mismatch_rejected():

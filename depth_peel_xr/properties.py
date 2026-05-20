@@ -280,7 +280,7 @@ class ReconstructionProps(PropertyGroup):
             "Max canonical-depth range allowed within an interior leaf "
             "(metres). Leaves with greater range subdivide further down "
             "to Min Quad Size — drives detail at depth discontinuities. "
-            "Only used by Build Displaced Planes."
+            "Only used by Build Displaced Quadtree."
         ),
         default=0.1,
         min=0.001,
