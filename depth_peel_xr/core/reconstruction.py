@@ -138,6 +138,27 @@ def build_layer_mesh(
     )
 
 
+def layer_mesh_to_displaced(mesh: LayerMesh) -> DisplacedLayerMesh:
+    """Repackage a slice-1 `LayerMesh` (quads, separate per-leaf verts)
+    into `DisplacedLayerMesh` shape so the Phase 5 cache + cull pipeline
+    can treat both reconstruction tiers uniformly. Each quad becomes a
+    4-vert polygon; UVs flatten (M, 4, 2) → (M·4, 2). Verts are unchanged
+    — flat-quadtree's coplanar layout at `layer.near` carries through.
+    """
+    n_faces = mesh.faces.shape[0]
+    polygons = [tuple(int(i) for i in face) for face in mesh.faces]
+    if n_faces > 0:
+        poly_uvs = mesh.uvs.reshape(n_faces * 4, 2).astype(np.float64, copy=True)
+    else:
+        poly_uvs = np.empty((0, 2), dtype=np.float64)
+    return DisplacedLayerMesh(
+        vertices=mesh.vertices.astype(np.float64, copy=True),
+        polygons=polygons,
+        poly_uvs=poly_uvs,
+        poly_classes=mesh.face_classes.copy(),
+    )
+
+
 def split_layer_mesh(mesh: LayerMesh) -> tuple[LayerMesh, LayerMesh]:
     """Partition a `LayerMesh` (slice-1 flat) into (interior, border)
     halves by `face_classes`. Each half retains only its own faces and the

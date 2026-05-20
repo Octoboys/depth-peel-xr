@@ -11,6 +11,7 @@ from core.reconstruction import (
     build_displaced_layer_mesh,
     build_layer_mesh,
     filter_displaced_mesh,
+    layer_mesh_to_displaced,
     split_displaced_layer_mesh,
     split_layer_mesh,
 )
@@ -643,3 +644,42 @@ def test_split_displaced_all_one_class_other_half_empty():
     assert len(interior.polygons) == 2
     assert len(border.polygons) == 0
     assert border.vertices.shape == (0, 3)
+
+
+# ---- layer_mesh_to_displaced ------------------------------------------------
+
+def test_layer_mesh_to_displaced_round_trip_preserves_geometry():
+    """Repackaging a LayerMesh as DisplacedLayerMesh keeps verts and
+    per-quad polygon indices intact, and flattens UVs to per-loop layout."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 16, "border"),
+    ]
+    flat = build_layer_mesh(
+        leaves=leaves,
+        image_width=32, image_height=16,
+        half_w_plane=2.0, half_h_plane=1.0,
+        headplane_offset=1.5, layer_near=3.5,
+    )
+    disp = layer_mesh_to_displaced(flat)
+    np.testing.assert_array_equal(disp.vertices, flat.vertices)
+    assert len(disp.polygons) == flat.faces.shape[0]
+    assert disp.polygons[0] == tuple(int(i) for i in flat.faces[0])
+    assert disp.polygons[1] == tuple(int(i) for i in flat.faces[1])
+    # poly_uvs flattens (M, 4, 2) → (M·4, 2). First 4 rows = first quad's loops.
+    np.testing.assert_array_equal(disp.poly_uvs[:4], flat.uvs[0])
+    np.testing.assert_array_equal(disp.poly_uvs[4:8], flat.uvs[1])
+    assert list(disp.poly_classes) == ["interior", "border"]
+
+
+def test_layer_mesh_to_displaced_empty():
+    empty_flat = build_layer_mesh(
+        leaves=[],
+        image_width=8, image_height=8,
+        half_w_plane=1.0, half_h_plane=1.0,
+        headplane_offset=1.0, layer_near=2.0,
+    )
+    disp = layer_mesh_to_displaced(empty_flat)
+    assert disp.vertices.shape == (0, 3)
+    assert disp.polygons == []
+    assert disp.poly_uvs.shape == (0, 2)

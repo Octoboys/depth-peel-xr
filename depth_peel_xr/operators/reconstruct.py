@@ -43,6 +43,7 @@ from ..core.reconstruction import (
     LayerMesh,
     build_displaced_layer_mesh,
     build_layer_mesh,
+    layer_mesh_to_displaced,
     split_displaced_layer_mesh,
     split_layer_mesh,
 )
@@ -299,6 +300,16 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
             _build_recon_mesh_object(
                 base_name + _ALPHA_SUFFIX,
                 border_half, portal, alpha_mat, coll,
+            )
+            # Cache flat halves in DisplacedLayerMesh shape so the cull
+            # operator can treat flat + displaced uniformly. Cull on flat
+            # is conservative (closer-surface sits at layer.near rather
+            # than actual scene depth) but still drops fully-occluded
+            # layers — useful for the cheaper recon tier.
+            set_layer_cache(
+                base_name,
+                layer_mesh_to_displaced(interior_half),
+                layer_mesh_to_displaced(border_half),
             )
             built += 1
             total_quads += len(leaves)
