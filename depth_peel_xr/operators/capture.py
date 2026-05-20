@@ -5,19 +5,22 @@ Output layout:
     <project>/captures/layer_NN/view_MM_color.exr   (RGBA float32, scene-linear)
     <project>/captures/layer_NN/view_MM_depth.exr   (depth pass, RGBA float32 with R = z)
 
-Two renders per (layer, view):
-  - Color: no compositor, standard render path writes Combined directly
-    to scene.render.filepath as flat OPEN_EXR.
-  - Depth: RL→Viewer compositor, drain Viewer to numpy, save as flat
-    OPEN_EXR via a throw-away `bpy.data.images.new`.
+One render per (layer, view). The compositor has two outputs in the
+same node group:
+  - `RL.Image → NodeGroupOutput.Image` populates Render Result; the
+    standard render path writes it to `scene.render.filepath` as flat
+    OPEN_EXR via `write_still=True`.
+  - `RL.Depth → Viewer` populates `bpy.data.images['Viewer Node']`,
+    which we drain to numpy and save as a flat OPEN_EXR via a throw-
+    away `bpy.data.images.new`.
 
 5.x compositor notes:
   - File Output writes multilayer-only EXRs, which Python `Image.pixels`
     can't pick individual passes from — so we never use it.
   - A non-empty compositor without a Composite-equivalent output node
     (CompositorNodeComposite was removed in 5.x; NodeGroupOutput is the
-    replacement) doesn't populate `Render Result`. Hence the color pass
-    runs with no compositor at all.
+    replacement) doesn't populate Render Result. The combined compositor
+    here uses NodeGroupOutput precisely so write_still still works.
   - Mutating live `Viewer Node` / `Render Result` images (e.g. via
     `viewer.save()` or `result.save_render()`) corrupts subsequent
     renders — we always drain pixels into numpy first and save via a
@@ -63,11 +66,10 @@ def _depth_path(layer_dir: Path, view_idx: int) -> Path:
     return layer_dir / f"view_{view_idx:02d}_depth.exr"
 
 
-def _build_depth_compositor(scene):
-    """RL.Depth → Viewer. Same pattern as the layer-placement depth
-    probe — Viewer reliably populates after `bpy.ops.render.render`.
-    No Composite/Output: the depth pass is consumed via Viewer drain,
-    not the standard render output.
+def _build_combined_compositor(scene):
+    """RL.Image → NodeGroupOutput.Image (drives Render Result for
+    write_still) AND RL.Depth → Viewer (populates the Viewer image we
+    drain for depth). One render produces both outputs.
 
     NOTE: caller must enable `view_layer.use_pass_z = True` first —
     `rl.outputs["Depth"]` only exists when the pass is active.
@@ -78,10 +80,20 @@ def _build_depth_compositor(scene):
     scene.compositing_node_group = tree
     tree.nodes.clear()
 
+    # Interface output socket — the bridge that lets NodeGroupOutput
+    # drive Render Result. Without this the compositor produces nothing
+    # for write_still to save.
+    tree.interface.new_socket(
+        name="Image", in_out="OUTPUT", socket_type="NodeSocketColor"
+    )
+
     rl = tree.nodes.new("CompositorNodeRLayers")
     rl.scene = scene
 
     viewer = tree.nodes.new("CompositorNodeViewer")
+    group_out = tree.nodes.new("NodeGroupOutput")
+
+    tree.links.new(rl.outputs["Image"], group_out.inputs["Image"])
     tree.links.new(rl.outputs["Depth"], viewer.inputs["Image"])
     return saved_tree
 
@@ -265,6 +277,9 @@ class DEPTHPEELXR_OT_capture(Operator):
             scene.render.image_settings.file_format = "OPEN_EXR"
             scene.render.image_settings.color_depth = "32"
             scene.render.image_settings.color_mode = "RGBA"
+            # Build the combined compositor once — same node group serves
+            # every (layer, view) render. Restored at finish/abort.
+            _build_combined_compositor(scene)
         except TypeError as exc:
             self._restore_state(context)
             self.report({"ERROR"}, f"Engine setup failed: {exc}")
@@ -310,8 +325,9 @@ class DEPTHPEELXR_OT_capture(Operator):
         return None
 
     def _render_one_view(self, context):
-        """Two renders for one (layer, view): color (no compositor,
-        standard render path) and depth (RL→Viewer, drain Viewer)."""
+        """One render produces both products: write_still saves the
+        color EXR via the standard render path (Render Result is driven
+        by NodeGroupOutput), and we drain Viewer Node for depth."""
         scene = context.scene
         li, vi, near, far, cam = self._plan[self._cursor]
 
@@ -324,20 +340,13 @@ class DEPTHPEELXR_OT_capture(Operator):
         color_target = _color_path(layer_dir, vi)
         depth_target = _depth_path(layer_dir, vi)
 
-        scene.compositing_node_group = None
+        # write_still appends `.exr` per file_format=OPEN_EXR; pass the
+        # path without the suffix so we don't end up with `.exr.exr`.
         scene.render.filepath = str(color_target.with_suffix(""))
         result = bpy.ops.render.render(write_still=True)
         if "FINISHED" not in result:
-            raise RuntimeError(f"color render returned {result} (check system console)")
-
-        depth_tree = _build_depth_compositor(scene)
-        try:
-            result = bpy.ops.render.render(write_still=False)
-            if "FINISHED" not in result:
-                raise RuntimeError(f"depth render returned {result} (check system console)")
-            _save_viewer_as_depth_exr(depth_target)
-        finally:
-            _restore_compositor(scene, depth_tree)
+            raise RuntimeError(f"render returned {result} (check system console)")
+        _save_viewer_as_depth_exr(depth_target)
 
     def _finish(self, context):
         self._restore_state(context)
