@@ -61,6 +61,7 @@ from .recon_cache import set_layer_cache
 _RECON_PREFIX = "dpxr_recon_layer_"
 _OPAQUE_SUFFIX = "_opaque"
 _ALPHA_SUFFIX = "_alpha"
+_RECON_TIMER_INTERVAL = 0.05
 # Canonical-alpha threshold above which a pixel counts as covered for
 # quadtree subdivision. Consolidation packs anti-aliased silhouette alpha
 # at edges, so we sit comfortably above the 0/1 boundary.
@@ -345,17 +346,24 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
             and consolidated_present(context)
         )
 
-    def execute(self, context):
+    def invoke(self, context, event):
         scene = context.scene
         rig = scene.dpx_portal_rig
         lp = scene.dpx_layer_placement
         recon_props = scene.dpx_reconstruction
-        portal = rig.portal_object
-        min_quad_size = int(recon_props.min_quad_size)
-        max_quad_size = int(recon_props.max_quad_size)
-        depth_tol = float(recon_props.depth_gradient_tol)
-
         consolidated = _consolidated_dir(context)
+
+        # Filter layers up-front so the progress count is honest. Skip
+        # any layer missing its consolidated EXR pair.
+        plan: list[int] = []
+        for li, _layer in enumerate(lp.layers):
+            color_path = _layer_color_exr(consolidated, li)
+            depth_path = _layer_depth_exr(consolidated, li)
+            if color_path.exists() and depth_path.exists():
+                plan.append(li)
+        if not plan:
+            self.report({"ERROR"}, "No consolidated layers found")
+            return {"CANCELLED"}
 
         # Profile log path: <project>/temp/displaced_profile.log. Cleared
         # at the start of each run so we capture only this build's timings.
@@ -369,128 +377,197 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
             except OSError:
                 profile_log = None
 
-        def _log(msg: str) -> None:
-            if profile_log is None:
-                return
-            with profile_log.open("a") as fh:
-                fh.write(msg + "\n")
+        self._plan = plan
+        self._cursor = 0
+        self._total = len(plan)
+        self._completed = 0
+        self._built = 0
+        self._total_polys = 0
+        self._should_cancel = False
+        self._profile_log = profile_log
+        self._consolidated = consolidated
+        self._portal = rig.portal_object
+        self._coll = ensure_collection(PREVIEW_COLLECTION)
+        self._ho = rig.headplane_offset
+        self._half_w_p = rig.portal_width * 0.5
+        self._half_h_p = rig.portal_height * 0.5
+        self._min_quad_size = int(recon_props.min_quad_size)
+        self._max_quad_size = int(recon_props.max_quad_size)
+        self._depth_tol = float(recon_props.depth_gradient_tol)
+        self._lp = lp
+        self._run_t0 = perf_counter()
 
-        run_t0 = perf_counter()
-        _log(
+        self._log(
             f"# Build Displaced Quadtree profile — "
-            f"min={min_quad_size}, max={max_quad_size}, tol={depth_tol:.3f}"
+            f"min={self._min_quad_size}, max={self._max_quad_size}, "
+            f"tol={self._depth_tol:.3f}"
         )
 
         _remove_preview_objects()
 
-        coll = ensure_collection(PREVIEW_COLLECTION)
-        ho = rig.headplane_offset
-        half_w_p = rig.portal_width * 0.5
-        half_h_p = rig.portal_height * 0.5
+        wm = context.window_manager
+        wm.progress_begin(0, self._total)
+        self._timer = wm.event_timer_add(_RECON_TIMER_INTERVAL, window=context.window)
+        wm.modal_handler_add(self)
+        self._update_header(context)
+        return {"RUNNING_MODAL"}
 
-        built = 0
-        total_polys = 0
-        for li, layer in enumerate(lp.layers):
-            color_path = _layer_color_exr(consolidated, li)
-            depth_path = _layer_depth_exr(consolidated, li)
-            if not color_path.exists() or not depth_path.exists():
-                continue
-            base_name = f"{_RECON_PREFIX}{li:02d}"
-            t0 = perf_counter()
-            try:
-                image, rgba, W, H = _load_canonical_image_and_pixels(
-                    color_path, f"{base_name}_img"
-                )
-                depth = _load_canonical_depth(depth_path)
-            except RuntimeError as exc:
-                self.report({"ERROR"}, f"Layer {li}: {exc}")
-                return {"CANCELLED"}
-            t_load = perf_counter() - t0
-            if depth.shape != (H, W):
-                self.report(
-                    {"ERROR"},
-                    f"Layer {li}: depth/colour size mismatch "
-                    f"({depth.shape} vs {(H, W)})",
-                )
-                return {"CANCELLED"}
+    def modal(self, context, event):
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
+            self._should_cancel = True
+            self._update_header(context, "cancelling…")
+            return {"RUNNING_MODAL"}
 
-            t0 = perf_counter()
-            coverage_mask = rgba[..., 3] > _COVERAGE_THRESHOLD
-            leaves = build_quadtree(
-                coverage_mask,
-                min_quad_size=min_quad_size,
-                tile_size=max_quad_size,
-                depth=depth,
-                depth_tol=depth_tol,
-            )
-            t_quadtree = perf_counter() - t0
-            if not leaves:
-                continue
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
 
-            t0 = perf_counter()
-            mesh_arrays = build_displaced_layer_mesh(
-                leaves=leaves,
-                canonical_depth=depth,
-                canonical_coverage=coverage_mask,
-                half_w_p=half_w_p,
-                half_h_p=half_h_p,
-                headplane_offset=ho,
-            )
-            interior_half, border_half = split_displaced_layer_mesh(mesh_arrays)
-            t_meshcore = perf_counter() - t0
+        if self._should_cancel:
+            return self._abort(context, "Cancelled by user")
 
-            t0 = perf_counter()
-            opaque_mat = _build_opaque_material(
-                f"{base_name}{_OPAQUE_SUFFIX}_mat", image
-            )
-            alpha_mat = _build_preview_material(
-                f"{base_name}{_ALPHA_SUFFIX}_mat", image
-            )
-            _build_displaced_recon_mesh_object(
-                base_name + _OPAQUE_SUFFIX,
-                interior_half, portal, opaque_mat, coll,
-            )
-            _build_displaced_recon_mesh_object(
-                base_name + _ALPHA_SUFFIX,
-                border_half, portal, alpha_mat, coll,
-            )
-            # Cache both halves so the cull operator can rasterise the
-            # opaque half for closer-surface and rebuild either half
-            # post-filter; Undo Cull restores from the cache.
-            set_layer_cache(base_name, interior_half, border_half)
-            t_bpy = perf_counter() - t0
+        if self._cursor >= self._total:
+            return self._finish(context)
 
-            n_leaves = len(leaves)
-            n_verts = int(mesh_arrays.vertices.shape[0])
-            n_polys = len(mesh_arrays.polygons)
-            n_int = len(interior_half.polygons)
-            n_bord = len(border_half.polygons)
-            _log(
-                f"layer {li:02d}  canonical={W}x{H}  "
-                f"leaves={n_leaves}  verts={n_verts}  polys={n_polys} "
-                f"(opaque={n_int}, alpha={n_bord})  | "
-                f"load={t_load:.3f}s  quadtree={t_quadtree:.3f}s  "
-                f"core_mesh={t_meshcore:.3f}s  bpy_handoff={t_bpy:.3f}s"
-            )
+        try:
+            self._build_one_layer(context)
+        except Exception as exc:
+            li = self._plan[self._cursor]
+            return self._abort(context, f"Build failed at layer {li}: {exc}")
 
-            built += 1
-            total_polys += n_polys
+        self._cursor += 1
+        self._completed += 1
+        context.window_manager.progress_update(self._completed)
+        self._update_header(context)
+        return {"RUNNING_MODAL"}
 
-        if built == 0:
-            self.report({"ERROR"}, "No consolidated layers found")
-            return {"CANCELLED"}
+    def cancel(self, context):
+        self._teardown_modal(context)
+        return None
 
-        _force_preview_view()
-        run_total = perf_counter() - run_t0
-        _log(f"# total wall time: {run_total:.3f}s for {built} layer(s)")
-        info = (
-            f"Built {built} displaced layer(s), {total_polys} polygon(s) "
-            f"total in {run_total:.2f}s"
+    def _build_one_layer(self, context):
+        li = self._plan[self._cursor]
+        color_path = _layer_color_exr(self._consolidated, li)
+        depth_path = _layer_depth_exr(self._consolidated, li)
+        base_name = f"{_RECON_PREFIX}{li:02d}"
+
+        t0 = perf_counter()
+        image, rgba, W, H = _load_canonical_image_and_pixels(
+            color_path, f"{base_name}_img"
         )
-        if profile_log is not None:
-            info = f"{info} — log: {profile_log}"
+        depth = _load_canonical_depth(depth_path)
+        t_load = perf_counter() - t0
+        if depth.shape != (H, W):
+            raise RuntimeError(
+                f"depth/colour size mismatch ({depth.shape} vs {(H, W)})"
+            )
+
+        t0 = perf_counter()
+        coverage_mask = rgba[..., 3] > _COVERAGE_THRESHOLD
+        leaves = build_quadtree(
+            coverage_mask,
+            min_quad_size=self._min_quad_size,
+            tile_size=self._max_quad_size,
+            depth=depth,
+            depth_tol=self._depth_tol,
+        )
+        t_quadtree = perf_counter() - t0
+        if not leaves:
+            return
+
+        t0 = perf_counter()
+        mesh_arrays = build_displaced_layer_mesh(
+            leaves=leaves,
+            canonical_depth=depth,
+            canonical_coverage=coverage_mask,
+            half_w_p=self._half_w_p,
+            half_h_p=self._half_h_p,
+            headplane_offset=self._ho,
+        )
+        interior_half, border_half = split_displaced_layer_mesh(mesh_arrays)
+        t_meshcore = perf_counter() - t0
+
+        t0 = perf_counter()
+        opaque_mat = _build_opaque_material(
+            f"{base_name}{_OPAQUE_SUFFIX}_mat", image
+        )
+        alpha_mat = _build_preview_material(
+            f"{base_name}{_ALPHA_SUFFIX}_mat", image
+        )
+        _build_displaced_recon_mesh_object(
+            base_name + _OPAQUE_SUFFIX,
+            interior_half, self._portal, opaque_mat, self._coll,
+        )
+        _build_displaced_recon_mesh_object(
+            base_name + _ALPHA_SUFFIX,
+            border_half, self._portal, alpha_mat, self._coll,
+        )
+        # Cache both halves so the cull operator can rasterise the
+        # opaque half for closer-surface and rebuild either half
+        # post-filter; Undo Cull restores from the cache.
+        set_layer_cache(base_name, interior_half, border_half)
+        t_bpy = perf_counter() - t0
+
+        n_polys = len(mesh_arrays.polygons)
+        self._log(
+            f"layer {li:02d}  canonical={W}x{H}  "
+            f"leaves={len(leaves)}  verts={int(mesh_arrays.vertices.shape[0])}  "
+            f"polys={n_polys} (opaque={len(interior_half.polygons)}, "
+            f"alpha={len(border_half.polygons)})  | "
+            f"load={t_load:.3f}s  quadtree={t_quadtree:.3f}s  "
+            f"core_mesh={t_meshcore:.3f}s  bpy_handoff={t_bpy:.3f}s"
+        )
+
+        self._built += 1
+        self._total_polys += n_polys
+
+    def _finish(self, context):
+        self._teardown_modal(context)
+        if self._built == 0:
+            self.report({"WARNING"}, "Nothing built — every layer's quadtree was empty")
+            return {"CANCELLED"}
+        _force_preview_view()
+        wall = perf_counter() - self._run_t0
+        self._log(f"# total wall time: {wall:.3f}s for {self._built} layer(s)")
+        info = (
+            f"Built {self._built} displaced layer(s), {self._total_polys} "
+            f"polygon(s) total in {wall:.2f}s"
+        )
+        if self._profile_log is not None:
+            info = f"{info} — log: {self._profile_log}"
         self.report({"INFO"}, info)
         return {"FINISHED"}
+
+    def _abort(self, context, reason: str):
+        self._teardown_modal(context)
+        self.report(
+            {"WARNING"},
+            f"{reason} ({self._completed}/{self._total} layers built)",
+        )
+        return {"CANCELLED"}
+
+    def _teardown_modal(self, context):
+        wm = context.window_manager
+        wm.progress_end()
+        if getattr(self, "_timer", None) is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.header_text_set(None)
+
+    def _update_header(self, context, suffix: str = ""):
+        text = f"Depth Peel XR — building displaced layer {self._completed}/{self._total}"
+        if suffix:
+            text = f"{text} ({suffix})"
+        text = f"{text} — ESC to cancel"
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.header_text_set(text)
+
+    def _log(self, msg: str) -> None:
+        if self._profile_log is None:
+            return
+        with self._profile_log.open("a") as fh:
+            fh.write(msg + "\n")
 
 
 CLASSES = (
