@@ -21,14 +21,31 @@ def _on_rig_param_change(self, context):
     invalidate_flat_preview(context)
 
 
+_last_viewing_resolution = 1024
+
+
 def _on_viewing_resolution_change(self, context):
     """viewing_resolution only affects FUTURE captures (scene render
     resolution); it doesn't invalidate existing captures, consolidated
     outputs, or the on-screen reconstruction (which is built from
     portal dimensions, not viewing_resolution). Resync the rig so
     scene.render.resolution_x/y updates for the next capture, then
-    stop — no preview invalidation."""
+    scale min/max_quad_size proportionally — they're in canonical
+    pixels, so without scaling a 2× canvas would silently make
+    silhouettes 2× finer and the top-level tile grid 2× denser."""
     from .operators.portal_rig import resync_rig_from_props
+    global _last_viewing_resolution
+
+    new_res = int(self.viewing_resolution)
+    old_res = _last_viewing_resolution
+    if new_res != old_res:
+        recon = context.scene.dpx_reconstruction
+        for attr in ("min_quad_size", "max_quad_size"):
+            scaled = getattr(recon, attr) * new_res // old_res
+            snapped = max(1, _snap_to_pow2(scaled))
+            if snapped != getattr(recon, attr):
+                setattr(recon, attr, snapped)
+    _last_viewing_resolution = new_res
 
     resync_rig_from_props(context)
 
