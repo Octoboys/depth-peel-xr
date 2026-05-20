@@ -47,6 +47,15 @@ from .reconstruct import (
 )
 
 
+# Closer-surface depth buffers (and the per-vert pixel-coord lookups
+# that probe them) run at this fraction of render resolution. Lower =
+# faster rasterise (16× fewer pixels at 0.25), more conservative cull
+# at silhouette edges (slight under-cull). Camera projection matrices
+# are unaffected — they encode aspect, which is preserved when both
+# axes scale equally.
+_CLOSER_SURFACE_SCALE = 0.25
+
+
 def _portal_world_matrix(rig) -> np.ndarray:
     return np.array(rig.portal_object.matrix_world, dtype=np.float64)
 
@@ -152,18 +161,58 @@ class DEPTHPEELXR_OT_cull_occluded(Operator):
         lp = getattr(scene, "dpx_layer_placement", None)
         if rig is None or rig.portal_object is None or lp is None or not lp.layers:
             return False
-        # Need at least one cached mesh — i.e., the user has run Build
-        # Displaced Quadtree this session.
+        # Need at least one cached mesh — i.e., the user has run a recon
+        # build this session that populated the cache.
         return bool(all_cached_names())
 
-    def execute(self, context):
-        scene = context.scene
-        rig = scene.dpx_portal_rig
-        lp = scene.dpx_layer_placement
+    def invoke(self, context, event):
+        # Single-tick modal — invoke sets the header, returns RUNNING_MODAL,
+        # Blender's event loop runs once (header repaints), TIMER fires,
+        # modal runs the entire cull synchronously in that tick. Without
+        # the yield, the header would never become visible because the
+        # cull would block Blender's main thread before any redraw.
         cams = get_view_cameras_sorted()
         if not cams:
             self.report({"ERROR"}, "No rig cameras found")
             return {"CANCELLED"}
+        self._cams = cams
+        self._set_header(context, "Depth Peel XR — culling occluded quads…")
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.001, window=context.window)
+        wm.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        try:
+            kept, dropped, n_layers_culled, wall = self._run_cull(context)
+        except Exception as exc:
+            return self._abort(context, f"Cull failed: {exc}")
+        self._teardown(context)
+        if dropped == 0:
+            self.report(
+                {"INFO"},
+                f"Nothing to cull — {kept} polygons kept ({wall:.1f}s)",
+            )
+        else:
+            pct = 100.0 * dropped / max(1, kept + dropped)
+            self.report(
+                {"INFO"},
+                f"Culled {dropped} polygon(s) ({pct:.1f}%), kept {kept} "
+                f"across {n_layers_culled} layer(s) in {wall:.1f}s",
+            )
+        return {"FINISHED"}
+
+    def cancel(self, context):
+        self._teardown(context)
+        return None
+
+    def _run_cull(self, context) -> tuple[int, int, int, float]:
+        scene = context.scene
+        rig = scene.dpx_portal_rig
+        lp = scene.dpx_layer_placement
+        cams = self._cams
         n_cams = len(cams)
 
         coll = ensure_collection(PREVIEW_COLLECTION)
@@ -173,14 +222,17 @@ class DEPTHPEELXR_OT_cull_occluded(Operator):
         render_y = scene.render.resolution_y
         pa_x = scene.render.pixel_aspect_x
         pa_y = scene.render.pixel_aspect_y
-        cam_world_from_cams, cam_projs, cam_resolutions = _gather_cam_matrices(
+        cam_world_from_cams, cam_projs, _ = _gather_cam_matrices(
             cams, render_x, render_y, pa_x, pa_y
         )
+        scaled_x = max(1, int(round(render_x * _CLOSER_SURFACE_SCALE)))
+        scaled_y = max(1, int(round(render_y * _CLOSER_SURFACE_SCALE)))
+        cam_resolutions = [(scaled_x, scaled_y) for _ in cams]
 
         # Closer-surface depth buffer per cam — incrementally built as
         # we walk layers near→far. Starts at +inf (nothing closer).
         closer_per_cam: list[np.ndarray] = [
-            np.full((render_y, render_x), np.inf, dtype=np.float32)
+            np.full((scaled_y, scaled_x), np.inf, dtype=np.float32)
             for _ in range(n_cams)
         ]
 
@@ -193,14 +245,11 @@ class DEPTHPEELXR_OT_cull_occluded(Operator):
             base_name = f"{_RECON_PREFIX}{li:02d}"
             pair: LayerCachePair | None = get_layer_cache(base_name)
             if pair is None:
-                # No cache for this layer — Build Displaced Quadtree
-                # skipped it (no consolidated EXR) or pre-cached state was
-                # cleared. Skip both cull and closer-surface accumulation.
+                # No cache for this layer — recon skipped it (no
+                # consolidated EXR) or pre-cached state was cleared.
                 continue
 
             if li > 0:
-                # Layers in front have been merged into closer_per_cam;
-                # cull both halves of L against that.
                 for half_name, half in (
                     (base_name + _OPAQUE_SUFFIX, pair.opaque),
                     (base_name + _ALPHA_SUFFIX, pair.alpha),
@@ -246,19 +295,26 @@ class DEPTHPEELXR_OT_cull_occluded(Operator):
             )
 
         wall = perf_counter() - t_run
-        if total_dropped == 0:
-            self.report(
-                {"INFO"},
-                f"Nothing to cull — {total_kept} polygons kept ({wall:.1f}s)",
-            )
-        else:
-            pct = 100.0 * total_dropped / max(1, total_kept + total_dropped)
-            self.report(
-                {"INFO"},
-                f"Culled {total_dropped} polygon(s) ({pct:.1f}%), kept "
-                f"{total_kept} across {n_layers_culled} layer(s) in {wall:.1f}s",
-            )
-        return {"FINISHED"}
+        return total_kept, total_dropped, n_layers_culled, wall
+
+    def _abort(self, context, reason: str):
+        self._teardown(context)
+        self.report({"WARNING"}, reason)
+        return {"CANCELLED"}
+
+    def _teardown(self, context):
+        wm = context.window_manager
+        if getattr(self, "_timer", None) is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.header_text_set(None)
+
+    def _set_header(self, context, text: str) -> None:
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.header_text_set(text)
 
 
 class DEPTHPEELXR_OT_undo_cull(Operator):
