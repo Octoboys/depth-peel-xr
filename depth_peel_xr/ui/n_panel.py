@@ -200,7 +200,7 @@ class DEPTHPEELXR_PT_main(Panel):
             cull_ready = bool(_recon_cache_names())
             col.label(
                 text=(
-                    "Build Displaced Quadtree to enable cull"
+                    "Build a quadtree reconstruction to enable cull"
                     if not cull_ready
                     else "Cache populated — cull ready"
                 )
