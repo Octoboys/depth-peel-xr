@@ -1,6 +1,5 @@
 """Layer-placement operators: analyse depth scope and emit layer boundaries.
 
-Phase 2 — both slices wired:
   - FIXED  : analytic spacing (uniform-Z / 1-over-Z / log). Pure math, live.
   - HYBRID : centre-camera Z-pass probe + histogram-driven CDF placement.
              Live but debounced (~150ms) so slider drags trigger one render

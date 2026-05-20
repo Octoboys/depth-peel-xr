@@ -1,11 +1,11 @@
 """Software depth rasteriser for occlusion-cull closer-surfaces.
 
 Produces a per-camera, per-pixel cam-space depth buffer for a triangle
-mesh. Used by Phase 5 cull to derive each closer layer's contribution
-to the closer-surface from its OPAQUE-half displaced mesh — captured-
-EXR alpha thresholding can't separate dense from sparse silhouettes
-(fences, foliage), but the opaque half of the reconstruction excludes
-border quads by construction.
+mesh. Used by occlusion culling to derive each closer layer's
+contribution to the closer-surface from its opaque (interior-leaf) mesh
+half. The opaque half excludes border quads by construction, so its
+silhouette is the correct occluder — alpha-cut silhouettes (fences,
+foliage) can't claim depth ownership of pixels they only sparsely cover.
 
 Perspective-correct depth via 1/w interpolation. Triangles whose verts
 straddle the near plane are skipped (no pixels claimed → +inf →

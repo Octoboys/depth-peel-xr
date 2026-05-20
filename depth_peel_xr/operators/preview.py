@@ -1,16 +1,16 @@
-"""Phase 3 slice 1 polish: flat-cutout preview of captured layers.
+"""Flat-cutout preview of captured layers.
 
 Builds one alpha-cut plane per layer at its `near` depth, textured from the
-centre camera's multilayer EXR. Combined.RGB drives an unlit emission;
+centre camera's flat EXR. Combined.RGB drives an unlit emission;
 Combined.Alpha (populated by film_transparent=True during capture) drives
 the alpha cutout. Mutually-exclusive preview that lives in DepthPeelXR_Preview
 so the user can toggle vs. source via the existing Inspect toggle.
 
-The plane is sized to the **centre camera's** frustum cross-section at the
-layer's near depth (not the super-frustum) — slice-1 only has centre-view
-data, so the plane is exactly as wide as that view covers. Slice 2 will
-upgrade to canonical/super-frustum sizing once sibling-view reprojection
-fills the gap.
+The plane is sized to the **centre camera's** frustum cross-section at
+the layer's near depth (not the super-frustum) — centre-only by design,
+acting as the pre-consolidation sanity check. The full reconstructions
+(Build Quadtree Planes / Build Displaced Quadtree) size to the super-
+frustum cross-section.
 
 `invalidate_flat_preview` is invoked from properties.py update callbacks
 and from operators that touch captures/rig state, so the preview only ever
@@ -32,7 +32,7 @@ from .portal_rig import ensure_collection, link_unique
 
 
 _PREVIEW_PREFIX = "dpxr_preview_layer_"
-# Reconstruction-mesh objects (Phase 4) share the cleanup path — mutually
+# Reconstruction-mesh objects share the cleanup path — mutually
 # exclusive with simple-plane preview, both live in DepthPeelXR_Preview.
 _RECON_PREFIX = "dpxr_recon_layer_"
 _GEO_PREFIXES = (_PREVIEW_PREFIX, _RECON_PREFIX)
@@ -103,8 +103,8 @@ def _load_layer_image(exr_path: Path, image_name: str) -> bpy.types.Image:
 def _build_preview_material(
     name: str, image: bpy.types.Image
 ) -> bpy.types.Material:
-    """Emission + alpha-clip — for border (silhouette) halves and the
-    legacy single-mesh preview/recon paths. Coverage drives alpha cutout."""
+    """Emission + alpha-clip — for border (silhouette) reconstruction
+    halves and the simple-plane preview. Coverage drives alpha cutout."""
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
 

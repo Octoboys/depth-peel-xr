@@ -1,10 +1,10 @@
 """Pre-cull cache: holds the as-built (opaque, alpha) `DisplacedLayerMesh`
-halves for each displaced reconstruction, keyed by base_name (= the bpy
+halves for each layer's reconstruction, keyed by base_name (= the bpy
 object base name, e.g. `dpxr_recon_layer_03` — the spawned objects are
 `<base>_opaque` and `<base>_alpha`).
 
-Populated by Build Displaced Quadtree before bpy handoff; consumed by
-Cull Occluded Quads (filtered copies used to rebuild the live meshes,
+Populated by the reconstruction operators before bpy handoff; consumed
+by Cull Occluded Quads (filtered copies used to rebuild the live meshes,
 opaque half rasterised for the closer-surface) and Undo Cull (restores
 the live meshes from the original cached arrays). Cleared by Clean Up
 Geo and on add-on unregister.

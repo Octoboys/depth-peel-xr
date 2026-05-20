@@ -1,18 +1,18 @@
-"""Phase 4 reconstruction operators.
+"""Reconstruction operators.
 
-Slice 1 (`DEPTHPEELXR_OT_reconstruct_flat`, "Build Quadtree Planes"):
-flat-quadtree planes per layer at `layer.near`. Silhouette-driven
+`DEPTHPEELXR_OT_reconstruct_flat` ("Build Quadtree Planes"): flat-
+quadtree planes per layer at `layer.near`. Silhouette-driven
 subdivision; no displacement.
 
-Slice 2 (`DEPTHPEELXR_OT_reconstruct_displaced`, "Build Displaced
-Planes"): the same quadtree augmented with depth-variance subdivision,
-plus per-vertex displacement via inverse super-frustum projection.
-Shared corner verts with bridge-triangle T-junction handling — adjacent
-leaves at different subdivision levels stitch through fan triangulation
-so the mesh stays watertight at depth discontinuities.
+`DEPTHPEELXR_OT_reconstruct_displaced` ("Build Displaced Quadtree"):
+the same quadtree augmented with depth-variance subdivision, plus per-
+vertex displacement via inverse super-frustum projection. Shared corner
+verts with bridge-triangle T-junction handling — adjacent leaves at
+different subdivision levels stitch through fan triangulation so the
+mesh stays watertight at depth discontinuities.
 
 Both consume `consolidated/layer_NN_color.exr` (RGB texture + alpha
-coverage) and slice-2 also reads `consolidated/layer_NN_depth.exr`
+coverage); the displaced operator also reads `consolidated/layer_NN_depth.exr`
 (canonical-cam-frame depth). Mutually exclusive: each operator wipes
 existing reconstruction objects before building. The shared
 `Clean Up Geo` operator (`_remove_preview_objects`) covers both because
@@ -20,9 +20,9 @@ they both spawn under `dpxr_recon_layer_*`.
 
 Each layer emits two mesh objects: `<base>_opaque` (interior leaves,
 emission-only, early-z friendly) and `<base>_alpha` (border leaves,
-emission + alpha-clip). The split aligns with the Phase 5 cull rule
-(opaque-half-only closer-surface) and saves alpha-test cost on the
-runtime for the bulk of each layer's coverage.
+emission + alpha-clip). The opaque half acts as the cull's closer-
+surface source and saves alpha-test cost on the runtime for the bulk of
+each layer's coverage.
 """
 
 from __future__ import annotations
@@ -62,8 +62,8 @@ _RECON_PREFIX = "dpxr_recon_layer_"
 _OPAQUE_SUFFIX = "_opaque"
 _ALPHA_SUFFIX = "_alpha"
 # Canonical-alpha threshold above which a pixel counts as covered for
-# quadtree subdivision. Slice 2 consolidation packs anti-aliased silhouette
-# alpha at edges, so we sit comfortably above the 0/1 boundary.
+# quadtree subdivision. Consolidation packs anti-aliased silhouette alpha
+# at edges, so we sit comfortably above the 0/1 boundary.
 _COVERAGE_THRESHOLD = 0.5
 
 
@@ -151,9 +151,9 @@ def _build_recon_mesh_object(
     material,
     coll,
 ) -> bpy.types.Object | None:
-    """Hand a slice-1 (flat-quadtree) `LayerMesh` half to bpy: build mesh,
-    write UVs, attach material, parent to portal. Returns None when the
-    half has no faces."""
+    """Hand a flat-quadtree `LayerMesh` half to bpy: build mesh, write
+    UVs, attach material, parent to portal. Returns None when the half
+    has no faces."""
     if mesh_arrays.faces.shape[0] == 0:
         return None
     mesh = bpy.data.meshes.new(f"{name}_mesh")
@@ -186,10 +186,10 @@ def _build_displaced_recon_mesh_object(
     material,
     coll,
 ) -> bpy.types.Object | None:
-    """Slice-2 counterpart of `_build_recon_mesh_object` for the
-    polygon-based `DisplacedLayerMesh` (one quad per fast-path leaf,
-    one n-gon per slow-path / T-junction leaf). Returns None for empty
-    halves so callers don't spawn empty objects."""
+    """Hand a `DisplacedLayerMesh` half to bpy. Polygons may be quads
+    (fast-path leaves) or n-gons (T-junction leaves with mid-edge verts
+    on the perimeter). Returns None for empty halves so callers don't
+    spawn empty objects."""
     if not mesh_arrays.polygons:
         return None
     mesh = bpy.data.meshes.new(f"{name}_mesh")

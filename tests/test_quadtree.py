@@ -143,11 +143,11 @@ def test_non_bool_mask_is_coerced():
     )
 
 
-# ---- depth-variance subdivision (slice 2) -----------------------------------
+# ---- depth-variance subdivision ---------------------------------------------
 
-def test_constant_depth_behaves_like_slice_1():
+def test_constant_depth_behaves_like_silhouette_only():
     """Fully-covered region with zero depth variance should produce the
-    same single interior leaf as slice 1, regardless of tol."""
+    same single interior leaf as the silhouette-only path, regardless of tol."""
     mask = np.ones((64, 64), dtype=bool)
     depth = np.full((64, 64), 5.0, dtype=np.float32)
     leaves = build_quadtree(
@@ -246,8 +246,8 @@ def test_depth_shape_mismatch_rejected():
         )
 
 
-def test_depth_without_tol_falls_back_to_slice_1():
-    """Passing depth alone (no tol) must not change slice-1 behaviour."""
+def test_depth_without_tol_skips_variance_split():
+    """Passing depth alone (no tol) must not enable variance subdivision."""
     mask = np.ones((32, 32), dtype=bool)
     depth = np.tile(np.linspace(0.0, 100.0, 32, dtype=np.float32), (32, 1))
     leaves_no_variance = build_quadtree(mask, min_quad_size=4, tile_size=32)

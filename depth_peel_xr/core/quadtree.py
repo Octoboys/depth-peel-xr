@@ -1,18 +1,17 @@
 """Adaptive quadtree over a 2D coverage mask.
 
-Slice 1 split rule (silhouette only):
+Silhouette split rule:
   - Quad fully covered → `interior` leaf.
   - Quad fully uncovered → no leaf (skipped; represents background).
   - Quad mixed AND size > min_quad_size → subdivide into 4.
   - Quad mixed AND size <= min_quad_size → `border` leaf.
 
-Slice 2 adds depth-variance subdivision for `interior` leaves: when a
+Optional depth-variance subdivision for `interior` leaves: when a
 canonical depth array and tolerance are passed in, a fully-covered quad
 whose `max - min` depth exceeds the tolerance subdivides further (down
-to min_quad_size). Slice-1 tile-size still caps the largest interior
-leaf in low-variance regions; the variance check only refines from
-there. When `depth` or `depth_tol` is None the slice-1 behaviour is
-preserved exactly.
+to min_quad_size). Tile-size still caps the largest interior leaf in
+low-variance regions; the variance check only refines from there. When
+`depth` or `depth_tol` is None, only the silhouette split applies.
 
 Top-level structure is a **tile grid** — the canonical is divided into
 TxT square tiles before the 4-way subdivision runs within each. Without
@@ -102,8 +101,9 @@ def _subdivide_tile(
             leaves.append(QuadtreeLeaf(qx, qy, qw, qh, cls))
             continue
         if state == "full":
-            # Slice-1 path stops here. Slice-2 subdivides further when the
-            # canonical depth variance across the region exceeds tolerance.
+            # Without depth-variance subdivision, fully-covered quads
+            # become leaves here. With it, subdivide further when depth
+            # variance across the region exceeds tolerance.
             if not use_variance or _depth_within_tol(depth, qx, qy, qw, qh, depth_tol):
                 leaves.append(QuadtreeLeaf(qx, qy, qw, qh, "interior"))
                 continue
@@ -135,12 +135,12 @@ def build_quadtree(
     that the canonical is divided into; should be a multiple of
     `min_quad_size` for clean subdivision.
 
-    Slice-2 variance subdivision: if both `depth` (a (H, W) float array
-    aligned with `coverage_mask`) and `depth_tol` are passed, fully-
-    covered quads whose `max - min` depth exceeds `depth_tol` subdivide
-    further until variance is within tolerance or `min_quad_size` is
-    reached. Pass either as None to fall back to slice-1 silhouette-only
-    behaviour.
+    Variance subdivision: if both `depth` (a (H, W) float array aligned
+    with `coverage_mask`) and `depth_tol` are passed, fully-covered
+    quads whose `max - min` depth exceeds `depth_tol` subdivide further
+    until variance is within tolerance or `min_quad_size` is reached.
+    Pass either as None to disable variance refinement (silhouette-only
+    splits).
     """
     if coverage_mask.ndim != 2:
         raise ValueError(f"coverage_mask must be 2D, got shape {coverage_mask.shape}")

@@ -1,11 +1,11 @@
 """Multi-view consolidation: post-capture pass that fuses each layer's
 NxN views into a canonical super-frustum-NDC RGBA + depth + source-mask.
 
-Phase 3 slice 3. Reads the per-view flat EXRs written by
-`DEPTHPEELXR_OT_capture`, reprojects every view (centre + siblings) into a
-virtual super-frustum perspective camera that exactly frames the union of
-all rig cameras' frustums, and writes one set of canonical outputs per
-layer under `<project>/captures/consolidated/`.
+Reads the per-view flat EXRs written by `DEPTHPEELXR_OT_capture`,
+reprojects every view (centre + siblings) into a virtual super-frustum
+perspective camera that exactly frames the union of all rig cameras'
+frustums, and writes one set of canonical outputs per layer under
+`<project>/captures/consolidated/`.
 
 The canonical's pixel grid grows per layer with the super/centre frustum-
 half-extent ratio at `layer.near` — deeper layers get bigger canonicals,
@@ -13,8 +13,8 @@ capped at 2× centre as layer.near → ∞. Centre-view pixels seed the central
 region; the surrounding annulus is filled by whichever sibling sees it
 (closest-to-centre wins for sibling overlap).
 
-Consumed downstream by Phase 4's reconstruction operators, which size
-their per-layer planes to `super_frustum_half_extents(layer.near)` so the
+Consumed downstream by the reconstruction operators, which size their
+per-layer planes to `super_frustum_half_extents(layer.near)` so the
 canonical pixel grid maps 1:1 onto the reconstructed plane.
 """
 

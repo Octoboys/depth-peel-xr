@@ -1,8 +1,6 @@
 """Multi-view capture: per-layer NxN renders writing flat OpenEXR
 pairs.
 
-Phase 3 slice 1.
-
 Output layout:
     <project>/captures/layer_NN/view_MM_color.exr   (RGBA float32, scene-linear)
     <project>/captures/layer_NN/view_MM_depth.exr   (depth pass, RGBA float32 with R = z)

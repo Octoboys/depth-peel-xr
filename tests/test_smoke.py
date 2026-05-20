@@ -1,4 +1,4 @@
-"""Phase 0 smoke tests — verify the dev venv and pytest wiring.
+"""Smoke tests — verify the dev venv and pytest wiring.
 
 These tests do *not* import `bpy`: that's deliberate. `fake-bpy-module`
 installs stub files for Pylance autocomplete but nothing runtime-importable

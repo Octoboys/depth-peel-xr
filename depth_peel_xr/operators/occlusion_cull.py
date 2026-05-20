@@ -1,16 +1,15 @@
-"""Phase 5 slice 1: occlusion culling for the displaced reconstruction.
+"""Occlusion culling for the layered reconstruction.
 
-Cull Occluded Quads walks the displaced layer meshes near→far. At each
+Cull Occluded Quads walks the cached layer meshes near→far. At each
 layer L > 0 it culls both the opaque and alpha halves against the
 accumulated per-cam closer-surface depth, then merges layer L's *opaque*
 half (rasterised per cam) into the closer-surface for downstream layers.
 
 Critically, only the OPAQUE half contributes to closer-surface — border
 (alpha-cut) halves never claim depth ownership of the pixels they only
-sparsely cover. This sidesteps the captured-EXR alpha-thresholding
-problem (fences/foliage have solid-alpha pixels but sparse coverage):
-the opaque half IS the geometry that owns pixels at runtime, so its
-silhouette is the correct occluder by construction.
+sparsely cover (e.g., fences, foliage). The opaque half IS the geometry
+that owns pixels at runtime, so its silhouette is the correct occluder
+by construction.
 
 Per-vert visibility test only — `cull_layer`'s docstring discusses the
 conservative "all 4 corners hidden, interior visible" failure mode that

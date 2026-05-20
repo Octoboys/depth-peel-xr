@@ -2,9 +2,8 @@
 
 For each polygon walked far→near, decide whether to cull it based on
 whether every one of its vertices is hidden from every head-plane camera
-by some closer-layer surface. The closer-surface depth comes from the
-captured per-cam per-layer depth EXRs (min over covered pixels across
-layers 0..N-1).
+by some closer-layer surface. The closer-surface depth buffer is
+supplied by the caller (per cam, with +inf where no closer layer covers).
 
 Conservative: a polygon is dropped only if every one of its verts is
 hidden from every cam — the moment any vert is visible (in-frustum AND

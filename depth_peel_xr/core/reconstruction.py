@@ -1,13 +1,13 @@
 """Build per-layer mesh arrays from quadtree leaves.
 
-Slice 1 (`build_layer_mesh`): coplanar verts at `layer.near` in portal-
-local space, non-shared verts (4 fresh per leaf), no displacement.
+`build_layer_mesh`: coplanar verts at `layer.near` in portal-local
+space, non-shared verts (4 fresh per leaf), no displacement.
 
-Slice 2 (`build_displaced_layer_mesh`): per-vertex inverse-projected world
-coords driven by canonical depth, shared verts hashed by canonical pixel
+`build_displaced_layer_mesh`: per-vertex inverse-projected world coords
+driven by canonical depth, shared verts hashed by canonical pixel
 coord, T-junctions handled via fan triangulation that includes mid-edge
-verts owned by smaller neighbours. Output is triangles (variable count
-per leaf, pre-triangulated) instead of quads.
+verts owned by smaller neighbours. Output is one polygon per leaf —
+quads on fast-path leaves, n-gons on T-junction leaves.
 
 Pure numpy / Python — no bpy. The operator that calls this is
 responsible for hand-off to `bpy.types.Mesh`.
@@ -42,9 +42,9 @@ class LayerMesh:
     face_classes: (M,) object array of 'interior' / 'border' strings.
 
     Vertices are NOT shared between adjacent leaves (4 fresh verts per
-    quad). Slice-1 flat impostors don't need a manifold mesh — sharing
-    would force per-vertex class disambiguation when adjacent leaves
-    differ in interior/border.
+    quad). Flat impostors don't need a manifold mesh — sharing would
+    force per-vertex class disambiguation when adjacent leaves differ
+    in interior/border.
     """
     vertices: np.ndarray
     faces: np.ndarray
@@ -54,7 +54,7 @@ class LayerMesh:
 
 @dataclass(frozen=True)
 class DisplacedLayerMesh:
-    """Plain-data mesh arrays for slice-2 displaced reconstruction.
+    """Plain-data mesh arrays for the displaced reconstruction.
 
     vertices: (N, 3) float64, portal-local. One row per unique canonical
       pixel-corner across all leaves (verts shared between adjacent
@@ -91,11 +91,11 @@ def build_layer_mesh(
 ) -> LayerMesh:
     """Emit mesh arrays for a single layer.
 
-    `half_w_plane` / `half_h_plane` are the world-space half-extents of the
-    reconstructed plane at `layer_near` depth. Slice 1 sizes the plane to
-    the super-frustum cross-section at that depth (see
-    `super_frustum_half_extents` in core.geometry) — wide enough that off-
-    centre XR viewers see no angular gap along the portal interior.
+    `half_w_plane` / `half_h_plane` are the world-space half-extents of
+    the reconstructed plane at `layer_near` depth. Callers typically
+    pass the super-frustum cross-section at that depth (see
+    `super_frustum_half_extents` in core.geometry) — wide enough that
+    off-centre XR viewers see no angular gap along the portal interior.
     """
     n_leaves = len(leaves)
     if n_leaves == 0:
@@ -139,11 +139,11 @@ def build_layer_mesh(
 
 
 def layer_mesh_to_displaced(mesh: LayerMesh) -> DisplacedLayerMesh:
-    """Repackage a slice-1 `LayerMesh` (quads, separate per-leaf verts)
-    into `DisplacedLayerMesh` shape so the Phase 5 cache + cull pipeline
-    can treat both reconstruction tiers uniformly. Each quad becomes a
-    4-vert polygon; UVs flatten (M, 4, 2) → (M·4, 2). Verts are unchanged
-    — flat-quadtree's coplanar layout at `layer.near` carries through.
+    """Repackage a `LayerMesh` (quads, separate per-leaf verts) into
+    `DisplacedLayerMesh` shape so callers can treat both reconstruction
+    tiers uniformly. Each quad becomes a 4-vert polygon; UVs flatten
+    (M, 4, 2) → (M·4, 2). Verts are unchanged — the coplanar layout at
+    `layer.near` carries through.
     """
     n_faces = mesh.faces.shape[0]
     polygons = [tuple(int(i) for i in face) for face in mesh.faces]
@@ -160,11 +160,11 @@ def layer_mesh_to_displaced(mesh: LayerMesh) -> DisplacedLayerMesh:
 
 
 def split_layer_mesh(mesh: LayerMesh) -> tuple[LayerMesh, LayerMesh]:
-    """Partition a `LayerMesh` (slice-1 flat) into (interior, border)
-    halves by `face_classes`. Each half retains only its own faces and the
-    4 fresh verts those faces own — slice-1 verts aren't shared, so the
-    split is a clean per-face partition with no vert remap needed beyond
-    a contiguous reindex.
+    """Partition a `LayerMesh` into (interior, border) halves by
+    `face_classes`. Each half retains only its own faces and the 4 fresh
+    verts those faces own — verts aren't shared, so the split is a clean
+    per-face partition with no vert remap needed beyond a contiguous
+    reindex.
     """
     n_faces = mesh.faces.shape[0]
     if n_faces == 0:
@@ -350,10 +350,10 @@ def build_displaced_layer_mesh(
     half_h_p: float,
     headplane_offset: float,
 ) -> DisplacedLayerMesh:
-    """Slice-2 mesh builder. Produces a manifold mesh with shared corner
-    verts; T-junctions between leaves of different sizes are stitched by
-    fan-triangulating each leaf's polygon through any mid-edge verts owned
-    by smaller neighbours.
+    """Produces a manifold mesh with shared corner verts; T-junctions
+    between leaves of different sizes are stitched by fan-triangulating
+    each leaf's polygon through any mid-edge verts owned by smaller
+    neighbours.
 
     `canonical_depth` is the consolidated depth (canonical-cam-space, =
     distance from canonical apex along its -Z axis); `canonical_coverage`

@@ -69,7 +69,7 @@ def test_single_full_image_leaf_spans_plane():
 
 def test_non_shared_vertices_per_leaf():
     # Two adjacent leaves should NOT share corner verts — each gets 4
-    # fresh vertices (slice-1 design choice; no manifold needed).
+    # fresh vertices (separate per-leaf verts; no manifold needed).
     leaves = [
         QuadtreeLeaf(0, 0, 32, 32, "interior"),
         QuadtreeLeaf(32, 0, 32, 32, "interior"),
@@ -118,7 +118,7 @@ def test_face_winding_normal_points_plus_y():
     assert normal[1] > 0
 
 
-# ---- displaced mesh builder (slice 2) ---------------------------------------
+# ---- displaced mesh builder -------------------------------------------------
 
 def _flat_depth(W: int, H: int, d: float) -> tuple[np.ndarray, np.ndarray]:
     """Constant-depth canonical (fully covered) at canonical depth d."""
@@ -558,7 +558,7 @@ def test_split_layer_mesh_partitions_by_class():
     assert all(c == "interior" for c in interior.face_classes)
     assert all(c == "border" for c in border.face_classes)
     # Each half has exactly the verts its faces reference (4 fresh per
-    # leaf, non-shared in slice-1) — interior=8, border=4.
+    # leaf, non-shared) — interior=8, border=4.
     assert interior.vertices.shape == (8, 3)
     assert border.vertices.shape == (4, 3)
     # All face indices land in their compacted vertex array.

@@ -1,5 +1,5 @@
 """Viewport overlays: head-plane wireframe + NxN camera-grid dots, plus
-N+1 layer-boundary planes when Phase 2 has placed layers.
+N+1 layer-boundary planes once layers are placed.
 
 Drawn via a SpaceView3D POST_VIEW handler so the head-plane stays unselectable
 and adds zero datablocks to the scene. Reads PortalRigProps + Portal world
