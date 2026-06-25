@@ -43,13 +43,31 @@ def _camera_grid_positions(n: int, headplane_w: float, headplane_h: float):
     if n == 1:
         yield 0, 0.0, 0.0
         return
-    half_w = headplane_w / 2.0
-    half_h = headplane_h / 2.0
     for r in range(n):
-        z = half_h - (r / (n - 1)) * headplane_h
+        z = (headplane_h * 0.5) - (r / (n - 1)) * headplane_h
         for c in range(n):
-            x = -half_w + (c / (n - 1)) * headplane_w
+            x = -(headplane_w * 0.5) + (c / (n - 1)) * headplane_w
             yield r * n + c, x, z
+    # Even N's grid has no entry at (0,0); the head-plane centre falls
+    # between cells. Downstream code anchors the canonical projection
+    # and the simple-planes texture on a "centre" view — without a real
+    # centre cam, a half-cell-offset stand-in is used and the projection
+    # / texture both end up offset. Append one extra cam at the true
+    # centre so `centre_view_index()` resolves to a real view.
+    if n % 2 == 0:
+        yield n * n, 0.0, 0.0
+
+
+def centre_view_index(grid_n: int) -> int:
+    """Index into `get_view_cameras_sorted()` of the head-plane-centre cam.
+
+    Odd N: the existing grid cam at row N//2, col N//2 IS the centre,
+    at flat-index N²//2.
+    Even N: an extra cam is appended at flat-index N² (see
+    `_camera_grid_positions`)."""
+    if grid_n >= 2 and grid_n % 2 == 0:
+        return grid_n * grid_n
+    return (grid_n * grid_n) // 2
 
 
 def ensure_collection(name: str) -> bpy.types.Collection:

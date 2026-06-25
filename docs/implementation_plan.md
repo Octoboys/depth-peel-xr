@@ -186,6 +186,7 @@ Each phase is independently shippable with sign-off demo. We pause for discussio
   - Creates collection `DepthPeelXR_Rig`.
   - Adds a Portal Mesh plane into it.
   - Generates NxN perspective cameras on the head-plane (centre + grid), all aiming through the portal with matching frustums.
+  - For **even N**, appends one extra camera at the head-plane centre (idx `N²`, filename `view_NN_color.exr` with `NN = N²`). Even-N grids have no entry at the geometric centre; consolidation and the simple-planes texture both anchor on a "centre" view (canonical-projection origin, sibling-order anchor, alpha-cut plane texture), and without a true centre cam they fall back to a half-cell-offset stand-in that visibly shifts both the texture and the canonical's centre alignment. `portal_rig.centre_view_index(grid_n)` is the single source of truth (returns `N²//2` for odd N, `N²` for even N); both `preview.py` and `consolidate.py` consume it.
 - `DEPTHPEELXR_OT_cleanup_portal_rig` operator: removes the rig collection and all contained entities.
 - `DEPTHPEELXR_OT_look_through_view_camera` operator: dropdown of the NxN cameras; selecting one sets active camera + enters camera view.
 - `DEPTHPEELXR_OT_toggle_preview` operator: swaps visibility between `DepthPeelXR_Source` and `DepthPeelXR_Preview` collections (creates them if absent).

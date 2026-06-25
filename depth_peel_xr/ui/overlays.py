@@ -24,6 +24,7 @@ _HANDLE = None
 
 _RECT_COLOR = (0.4, 0.8, 1.0, 1.0)
 _GRID_COLOR = (1.0, 0.85, 0.2, 1.0)
+_CENTRE_ANCHOR_COLOR = (1.0, 1.0, 1.0, 1.0)
 _BOUNDARY_INTERIOR_COLOR = (0.3, 1.0, 0.4, 0.18)
 _BOUNDARY_INTERIOR_EDGE_COLOR = (0.04, 0.18, 0.06, 1.0)
 _BOUNDARY_DEEPEST_COLOR = (1.0, 0.4, 0.7, 0.22)
@@ -134,6 +135,14 @@ def _draw():
     gpu.state.point_size_set(8.0)
     shader.uniform_float("color", _GRID_COLOR)
     batch_for_shader(shader, "POINTS", {"pos": grid_points}).draw(shader)
+
+    # Even N has no grid entry at the head-plane centre — the rig appends
+    # one extra cam there (see `portal_rig.centre_view_index`). Draw it
+    # in white so it's visibly distinct from the yellow grid samples.
+    if n >= 2 and n % 2 == 0:
+        centre_anchor = [M @ Vector((0.0, ho, 0.0))]
+        shader.uniform_float("color", _CENTRE_ANCHOR_COLOR)
+        batch_for_shader(shader, "POINTS", {"pos": centre_anchor}).draw(shader)
 
     gpu.state.line_width_set(1.0)
     gpu.state.point_size_set(1.0)

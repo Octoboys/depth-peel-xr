@@ -28,7 +28,7 @@ from mathutils import Matrix
 from .. import paths as paths_mod
 from ..core.geometry import centre_frustum_half_extents
 from .inspect import PREVIEW_COLLECTION, SOURCE_COLLECTION, get_view_cameras_sorted
-from .portal_rig import ensure_collection, link_unique
+from .portal_rig import centre_view_index, ensure_collection, link_unique
 
 
 _PREVIEW_PREFIX = "dpxr_preview_layer_"
@@ -36,11 +36,6 @@ _PREVIEW_PREFIX = "dpxr_preview_layer_"
 # exclusive with simple-plane preview, both live in DepthPeelXR_Preview.
 _RECON_PREFIX = "dpxr_recon_layer_"
 _GEO_PREFIXES = (_PREVIEW_PREFIX, _RECON_PREFIX)
-
-
-def _centre_view_index(n_views: int) -> int:
-    # Even-N grids have no exact centre — accept a half-cell offset.
-    return n_views // 2
 
 
 def _layer_centre_exr(captures: Path, layer_idx: int, view_idx: int) -> Path:
@@ -57,10 +52,11 @@ def expected_captures_present(context) -> bool:
         return False
     scene = context.scene
     lp = scene.dpx_layer_placement
+    rig = getattr(scene, "dpx_portal_rig", None)
     cams = get_view_cameras_sorted()
-    if not lp.layers or not cams:
+    if not lp.layers or not cams or rig is None:
         return False
-    centre = _centre_view_index(len(cams))
+    centre = centre_view_index(rig.grid_n)
     return _layer_centre_exr(captures, 0, centre).exists()
 
 
@@ -242,8 +238,7 @@ class DEPTHPEELXR_OT_preview_flat(Operator):
         portal = rig.portal_object
 
         captures = paths_mod.captures_dir(context)
-        cams = get_view_cameras_sorted()
-        centre_idx = _centre_view_index(len(cams))
+        centre_idx = centre_view_index(rig.grid_n)
 
         _remove_preview_objects()
 

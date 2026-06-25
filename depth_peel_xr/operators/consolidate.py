@@ -34,6 +34,7 @@ from ..core.geometry import (
 )
 from ..core.multi_view import consolidate_layer
 from .inspect import get_view_cameras_sorted
+from .portal_rig import centre_view_index
 from .preview import invalidate_flat_preview
 
 
@@ -177,10 +178,6 @@ def _sibling_order_closest_first(cams: list, centre_idx: int) -> list[int]:
     return [i for _d, i in distances]
 
 
-def _centre_view_index(n_views: int) -> int:
-    return n_views // 2
-
-
 def _write_canonical_outputs(
     consolidated_dir: Path,
     layer_idx: int,
@@ -270,7 +267,7 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
         # now stale.
         invalidate_flat_preview(context)
 
-        centre_idx = _centre_view_index(len(cams))
+        centre_idx = centre_view_index(rig.grid_n)
         sibling_order = _sibling_order_closest_first(cams, centre_idx)
 
         render_x = scene.render.resolution_x
