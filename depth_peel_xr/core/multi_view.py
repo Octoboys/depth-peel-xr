@@ -368,7 +368,7 @@ def reproject_view_to_canonical(
     return contrib_rgba, contrib_depth, contrib_valid
 
 
-def consolidate_layer(
+def consolidate_layer_forward(
     views_sorted: list[dict],
     canonical_shape: tuple[int, int],
     canonical_cam_from_world: np.ndarray,
@@ -428,3 +428,200 @@ def consolidate_layer(
     )
 
     return canonical_rgba, canonical_depth, coverage_mask, source_mask
+
+
+# ---- reverse-mapping consolidation -----------------------------------------
+
+# Default depth-consistency tolerance for the reverse-mapping gate
+# (relative — see consolidate_layer_reverse). Empirical default tuned
+# against real-scene fallback rates: 1% was too tight near the portal
+# (bilinear-sampled depth across silhouette edges easily disagrees with
+# expected_depth by a few percent), 5% trades a little disocclusion-
+# gate sensitivity for a much smaller fallback band on close geometry.
+DEFAULT_REVERSE_DEPTH_REL_TOL = 0.05
+
+# Floor for the premultiply-recovery divide so a near-zero alpha doesn't
+# blow up RGB on extrapolated edge samples.
+_REVERSE_PREMULT_EPS = 1e-3
+
+# Sentinel written into source_mask for canonical pixels that no source
+# view resolved (pass-1 forward-splat colour kept).
+REVERSE_FALLBACK_SOURCE = 255
+
+
+def _bilinear_sample_rgba_depth(
+    src_rgba: np.ndarray,
+    src_depth: np.ndarray,
+    u_pix: np.ndarray,
+    v_pix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """4-tap bilinear sample at fractional pixel positions (u_pix, v_pix).
+
+    Returns (rgba, alpha, depth) shaped like u_pix. Out-of-bounds taps
+    are clamped (caller is expected to mask the result via in-bounds
+    gating already)."""
+    H, W, _ = src_rgba.shape
+    u0 = np.floor(u_pix).astype(np.int64)
+    v0 = np.floor(v_pix).astype(np.int64)
+    u0c = np.clip(u0, 0, W - 2)
+    v0c = np.clip(v0, 0, H - 2)
+    fu = (u_pix - u0c).astype(np.float32)
+    fv = (v_pix - v0c).astype(np.float32)
+
+    rgba_00 = src_rgba[v0c, u0c]
+    rgba_01 = src_rgba[v0c, u0c + 1]
+    rgba_10 = src_rgba[v0c + 1, u0c]
+    rgba_11 = src_rgba[v0c + 1, u0c + 1]
+
+    w00 = (1.0 - fu) * (1.0 - fv)
+    w01 = fu * (1.0 - fv)
+    w10 = (1.0 - fu) * fv
+    w11 = fu * fv
+
+    rgba_sampled = (
+        rgba_00 * w00[..., None]
+        + rgba_01 * w01[..., None]
+        + rgba_10 * w10[..., None]
+        + rgba_11 * w11[..., None]
+    )
+    alpha_sampled = rgba_sampled[..., 3]
+
+    depth_00 = src_depth[v0c, u0c]
+    depth_01 = src_depth[v0c, u0c + 1]
+    depth_10 = src_depth[v0c + 1, u0c]
+    depth_11 = src_depth[v0c + 1, u0c + 1]
+    depth_sampled = (
+        depth_00 * w00 + depth_01 * w01 + depth_10 * w10 + depth_11 * w11
+    )
+
+    return rgba_sampled, alpha_sampled, depth_sampled
+
+
+def consolidate_layer_reverse(
+    views_sorted: list[dict],
+    canonical_shape: tuple[int, int],
+    canonical_cam_from_world: np.ndarray,
+    canonical_proj: np.ndarray,
+    rel_tol: float = DEFAULT_REVERSE_DEPTH_REL_TOL,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Two-pass consolidation: forward-splat for depth + coverage, then
+    reverse-mapping for colour.
+
+    Pass 1 = `consolidate_layer_forward` body unchanged. Owns canonical
+    depth + coverage; its colour is kept only as fallback.
+    Pass 2 walks each covered canonical pixel: backproject (canonical NDC,
+    pass-1 depth) → world point, project into each source view in priority
+    order (centre, then siblings closest-to-centre — caller's convention),
+    accept the first that passes both:
+      - alpha gate: bilinear-sampled source α > COVERAGE_ALPHA_THRESHOLD.
+      - depth-consistency gate: |bilinear-sampled source depth − expected
+        source-cam |z|| / expected < rel_tol. Catches disocclusion (sibling
+        whose surface there is closer than what pass-1 recorded).
+    Premultiplied-alpha treatment on the bilinear sample: output
+    `RGB = sampled_RGB / max(sampled_A, eps)` so anti-aliased silhouettes
+    stay at full surface colour and fade only via the alpha channel.
+    Pixels where no view passes both gates retain pass-1 RGBA and get
+    `source_mask = REVERSE_FALLBACK_SOURCE` (255).
+
+    Vectorised within each view; later views only operate on still-
+    unresolved pixels."""
+    # Pass 1 — same data flow as the forward-only path; we keep its
+    # depth + coverage + RGBA-as-fallback.
+    rgba_p1, depth_p1, coverage_p1, _source_p1 = consolidate_layer_forward(
+        views_sorted, canonical_shape,
+        canonical_cam_from_world, canonical_proj,
+    )
+
+    Hc, Wc = canonical_shape
+    if not coverage_p1.any() or not views_sorted:
+        return (
+            rgba_p1,
+            depth_p1,
+            coverage_p1,
+            np.full((Hc, Wc), REVERSE_FALLBACK_SOURCE, dtype=np.uint8),
+        )
+
+    # Backproject every covered canonical pixel to a world point. Reuses
+    # the unproject helper used by the forward path; passing the full
+    # canonical shape is fine — uncovered pixels just won't be considered.
+    proj_inv = np.linalg.inv(canonical_proj)
+    canonical_world_from_cam = np.linalg.inv(canonical_cam_from_world)
+
+    u_ndc, v_ndc = _ndc_grid(Wc, Hc)
+    cam_pt = _unproject_to_camera_space(u_ndc, v_ndc, depth_p1, proj_inv)
+    cam_pt_4d = np.concatenate(
+        [cam_pt, np.ones((Hc, Wc, 1), dtype=cam_pt.dtype)], axis=-1
+    )
+    world_pt = cam_pt_4d @ canonical_world_from_cam.T  # (Hc, Wc, 4)
+
+    rgba_out = rgba_p1.copy()
+    source_out = np.full((Hc, Wc), REVERSE_FALLBACK_SOURCE, dtype=np.uint8)
+    unresolved = coverage_p1.copy()
+
+    for view_idx, view in enumerate(views_sorted):
+        if not unresolved.any():
+            break
+        src_rgba = view["rgba"]
+        src_depth = view["depth"]
+        src_world_from_cam = view["world_from_cam"]
+        src_proj = view["proj"]
+        Hs, Ws, _ = src_rgba.shape
+
+        src_cam_from_world = np.linalg.inv(src_world_from_cam)
+        src_cam_pt = world_pt @ src_cam_from_world.T  # (Hc, Wc, 4)
+        src_clip = src_cam_pt @ src_proj.T  # (Hc, Wc, 4)
+        w = src_clip[..., 3]
+        w_safe = w != 0
+        ndc = np.where(
+            w_safe[..., None],
+            src_clip / np.where(w_safe[..., None], src_clip[..., 3:4], 1.0),
+            0.0,
+        )
+
+        # NDC → fractional source pixel (matches the half-pixel offset of
+        # `_ndc_grid`). Allow floating-point bounds [0, W-1] / [0, H-1];
+        # `_bilinear_sample_rgba_depth` clamps the integer floor so we
+        # don't index OOB on equality with the upper bound.
+        u_pix = (ndc[..., 0] + 1.0) * 0.5 * Ws - 0.5
+        v_pix = (1.0 - ndc[..., 1]) * 0.5 * Hs - 0.5
+
+        expected_depth = -src_cam_pt[..., 2]  # positive cam-space distance
+
+        in_bounds = (
+            unresolved
+            & w_safe
+            & (u_pix >= 0.0) & (u_pix <= float(Ws - 1))
+            & (v_pix >= 0.0) & (v_pix <= float(Hs - 1))
+            & (expected_depth > 0)
+            & np.isfinite(expected_depth)
+        )
+        if not in_bounds.any():
+            continue
+
+        rgba_sampled, alpha_sampled, depth_sampled = _bilinear_sample_rgba_depth(
+            src_rgba, src_depth, u_pix, v_pix
+        )
+
+        alpha_gate = alpha_sampled > COVERAGE_ALPHA_THRESHOLD
+        depth_gate = (
+            np.abs(depth_sampled - expected_depth)
+            / np.maximum(expected_depth, 1e-6)
+            < rel_tol
+        )
+        passes = in_bounds & alpha_gate & depth_gate
+        if not passes.any():
+            continue
+
+        # Premultiplied-alpha recovery — bilinear-sampled RGB already has
+        # the alpha factor folded in at antialiased edges, so divide it
+        # back out to get the surface colour. Floor on the divide guards
+        # against anomalous near-zero α from extrapolated samples.
+        a_safe = np.maximum(alpha_sampled, _REVERSE_PREMULT_EPS)
+        rgb_unpremult = rgba_sampled[..., :3] / a_safe[..., None]
+
+        rgba_out[passes, :3] = rgb_unpremult[passes]
+        rgba_out[passes, 3] = alpha_sampled[passes]
+        source_out[passes] = view_idx
+        unresolved &= ~passes
+
+    return rgba_out, depth_p1, coverage_p1, source_out

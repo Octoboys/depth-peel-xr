@@ -32,7 +32,7 @@ from ..core.geometry import (
     super_frustum_canonical_shape,
     super_frustum_projection,
 )
-from ..core.multi_view import consolidate_layer
+from ..core.multi_view import consolidate_layer_forward, consolidate_layer_reverse
 from .inspect import get_view_cameras_sorted
 from .portal_rig import centre_view_index
 from .preview import invalidate_flat_preview
@@ -40,6 +40,14 @@ from .preview import invalidate_flat_preview
 
 _LOAD_IMAGE_PREFIX = "dpxr_consolidate_tmp_"
 _SAVE_IMAGE_PREFIX = "dpxr_consolidate_out_"
+
+# Dev/test toggle for the reverse-mapping consolidation path. When True,
+# colour is resolved via per-canonical-pixel backproject + bilinear
+# source sampling (sharper silhouettes, fills annulus holes from divergent
+# forward-splat coverage); pass-1 forward splat still owns depth.
+# Flipped on/off here during the slice's dev cycle; once visual sign-off
+# lands the forward-only path is retired entirely.
+_USE_REVERSE_MAPPING = False
 
 
 def _captures_dir(context) -> Path | None:
@@ -405,7 +413,9 @@ class DEPTHPEELXR_OT_consolidate_views(Operator):
             self._half_w_p, self._half_h_p, self._ho,
         )
 
-        rgba, depth, _coverage, source = consolidate_layer(
+        rgba, depth, _coverage, source = (
+            consolidate_layer_reverse if _USE_REVERSE_MAPPING else consolidate_layer_forward
+        )(
             views_sorted=views_sorted,
             canonical_shape=(canonical_H, canonical_W),
             canonical_cam_from_world=self._canonical_cam_from_world,

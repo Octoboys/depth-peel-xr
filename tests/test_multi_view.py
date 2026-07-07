@@ -12,8 +12,11 @@ import pytest
 from core.geometry import super_frustum_projection
 from core.multi_view import (
     COVERAGE_ALPHA_THRESHOLD,
+    DEFAULT_REVERSE_DEPTH_REL_TOL,
+    REVERSE_FALLBACK_SOURCE,
     _remove_single_pixel_anomalies,
-    consolidate_layer,
+    consolidate_layer_forward,
+    consolidate_layer_reverse,
     reproject_view_to_canonical,
 )
 
@@ -165,7 +168,7 @@ def test_consolidate_preserves_centre_priority():
          "world_from_cam": world_from_cam, "proj": proj},
     ]
 
-    rgba, depth, coverage, source = consolidate_layer(
+    rgba, depth, coverage, source = consolidate_layer_forward(
         views_sorted=views,
         canonical_shape=(H, W),
         canonical_cam_from_world=np.linalg.inv(world_from_cam),
@@ -215,7 +218,7 @@ def test_consolidate_closest_to_centre_wins():
         "world_from_cam": world_from_cam, "proj": proj,
     }
 
-    rgba, _, _, source = consolidate_layer(
+    rgba, _, _, source = consolidate_layer_forward(
         views_sorted=[centre, near_sib, far_sib],
         canonical_shape=(H, W),
         canonical_cam_from_world=np.linalg.inv(world_from_cam),
@@ -240,7 +243,7 @@ def test_consolidate_uncovered_pixel_alpha_zeroed():
         "world_from_cam": world_from_cam, "proj": proj,
     }
 
-    rgba, depth, coverage, source = consolidate_layer(
+    rgba, depth, coverage, source = consolidate_layer_forward(
         views_sorted=[centre],
         canonical_shape=(H, W),
         canonical_cam_from_world=np.linalg.inv(world_from_cam),
@@ -509,7 +512,7 @@ def test_super_frustum_canonical_fills_annulus_from_sibling():
     )
     canonical_cam_from_world = canonical_from_centre @ np.linalg.inv(centre_world_from_cam)
 
-    rgba, depth, coverage, source = consolidate_layer(
+    rgba, depth, coverage, source = consolidate_layer_forward(
         views_sorted=[centre, sibling],
         canonical_shape=(canonical_H, canonical_W),
         canonical_cam_from_world=canonical_cam_from_world,
@@ -577,7 +580,7 @@ def test_centre_view_lands_in_canonical_centre_region():
     )
     canonical_cam_from_world = canonical_from_centre @ np.linalg.inv(centre_world_from_cam)
 
-    _, _, coverage, _ = consolidate_layer(
+    _, _, coverage, _ = consolidate_layer_forward(
         views_sorted=[centre],
         canonical_shape=(canonical_H, canonical_W),
         canonical_cam_from_world=canonical_cam_from_world,
@@ -591,3 +594,195 @@ def test_centre_view_lands_in_canonical_centre_region():
     # Right edge at NDC ~0.6 maps to canonical pixel ≈ 0.8 * canonical_W.
     expected_u = int(0.8 * canonical_W)
     assert abs(u - expected_u) <= 3
+
+
+# ---- reverse-mapping consolidation -----------------------------------------
+
+def test_reverse_mapping_yields_bilinear_sub_pixel_colour():
+    """Pass-2 reverse-maps each canonical pixel to a fractional source
+    position and bilinear-samples — so a colour gradient survives at sub-
+    pixel precision. The forward splat alone NN-quantises to a single
+    source pixel's value; this test asserts the reverse result is the
+    bilinear-interpolated value, not the NN value."""
+    proj, world_from_cam = _identity_proj_and_world()
+    Hs, Ws = 16, 16
+    Hc, Wc = 8, 8  # canonical SMALLER than source so every canonical pixel
+                   # gets ≥1 source splat (full coverage, morph opening
+                   # leaves it untouched) while canonical → source still
+                   # maps to fractional pixel positions for bilinear.
+
+    # Linear red gradient across columns of the source. Alpha=1 everywhere.
+    centre_rgba = np.zeros((Hs, Ws, 4), dtype=np.float32)
+    centre_rgba[..., 0] = np.linspace(0.0, 1.0, Ws, dtype=np.float32)[None, :]
+    centre_rgba[..., 3] = 1.0
+    centre_depth = np.full((Hs, Ws), 5.0, dtype=np.float32)
+
+    # Two siblings — same pose; centre is priority 1 so reverse-mapping
+    # picks centre everywhere and sibling values shouldn't appear in the
+    # output. Their presence just satisfies the "synthetic 3-view scene".
+    sib_rgba = np.full((Hs, Ws, 4), [0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+    sib_depth = np.full((Hs, Ws), 5.0, dtype=np.float32)
+    centre = {
+        "rgba": centre_rgba, "depth": centre_depth,
+        "world_from_cam": world_from_cam, "proj": proj,
+    }
+    sib1 = {
+        "rgba": sib_rgba.copy(), "depth": sib_depth.copy(),
+        "world_from_cam": world_from_cam, "proj": proj,
+    }
+    sib2 = {
+        "rgba": sib_rgba.copy(), "depth": sib_depth.copy(),
+        "world_from_cam": world_from_cam, "proj": proj,
+    }
+
+    rgba_rev, depth_rev, coverage, source = consolidate_layer_reverse(
+        views_sorted=[centre, sib1, sib2],
+        canonical_shape=(Hc, Wc),
+        canonical_cam_from_world=np.linalg.inv(world_from_cam),
+        canonical_proj=proj,
+    )
+
+    assert coverage.all()
+    # Centre wins reverse-mapping at every covered pixel (passes both
+    # gates first in priority order).
+    assert (source == 0).all()
+
+    # Canonical pixel (4, 4): NDC (0.125, -0.125) → source u_pix = v_pix = 8.5,
+    # bilinear of source cols 8 and 9 with equal weights.
+    cu, cv = Wc // 2, Hc // 2
+    canonical_ndc_u = (cu + 0.5) / Wc * 2.0 - 1.0
+    source_u_frac = (canonical_ndc_u + 1.0) * 0.5 * Ws - 0.5
+    u0 = int(np.floor(source_u_frac))
+    fu = source_u_frac - u0
+    red_ramp = np.linspace(0.0, 1.0, Ws)
+    expected_red = (1.0 - fu) * red_ramp[u0] + fu * red_ramp[u0 + 1]
+    np.testing.assert_allclose(rgba_rev[cv, cu, 0], expected_red, atol=2e-3)
+
+    # Sanity: not equal to either NN-quantised neighbour value (so the
+    # test isn't accidentally passing because forward and reverse coincide).
+    assert abs(rgba_rev[cv, cu, 0] - red_ramp[u0]) > 1e-2
+    assert abs(rgba_rev[cv, cu, 0] - red_ramp[u0 + 1]) > 1e-2
+
+    # Pass-1 (forward) owns depth, untouched by pass-2.
+    np.testing.assert_allclose(depth_rev, 5.0, atol=1e-3)
+
+
+def test_reverse_mapping_disocclusion_rejects_closer_occluder():
+    """Closer-occluder sibling is offered first in pass-2's priority
+    order but fails the depth-consistency gate; the next-priority sibling
+    that actually sees the surface at pass-1's recorded depth wins.
+
+    Geometry: world point W = (0, 0, -5).
+      - centre cam (origin): no coverage at W's pixel.
+      - sib1 (priority 1, world translation +X 0.5): a closer occluder at
+        depth 3 in the pixel where W projects (so projecting W back into
+        sib1's image lands on a real, alpha=1 pixel — but with a closer
+        depth than W's true depth). Disocclusion → depth gate must fail.
+      - sib2 (priority 2, world translation -X 0.5): the far surface at
+        depth 5 in the pixel where W projects. Both gates pass.
+    """
+    proj, _ = _identity_proj_and_world()
+    Hs, Ws = 64, 64
+    f_aspect = proj[0, 0]  # = 1.732 for fovy=60°, aspect=1
+
+    centre_world_from_cam = np.eye(4, dtype=np.float64)
+    sib1_world_from_cam = _translation(+0.5, 0.0, 0.0)
+    sib2_world_from_cam = _translation(-0.5, 0.0, 0.0)
+
+    # Where W projects in each sibling's image (Y centred). For W = (0,0,-5)
+    # in a sibling at world (±0.5, 0, 0), sibling-cam-x = ∓0.5 at z=-5,
+    # NDC u = sibling-cam-x / 5 * f_aspect. ⇒ sib1 ≈ -0.173, sib2 ≈ +0.173.
+    u_sib1_ndc = -0.5 / 5.0 * f_aspect
+    u_sib2_ndc = +0.5 / 5.0 * f_aspect
+    u_sib1_pix = int(round((u_sib1_ndc + 1.0) * 0.5 * Ws))
+    u_sib2_pix = int(round((u_sib2_ndc + 1.0) * 0.5 * Ws))
+    v_centre = Hs // 2
+
+    # 5×5 patches so the canonical splat survives morphological opening
+    # in pass-1 cleanup and ends up with ≥1 fully-covered pixel at the
+    # patch centre.
+    sib1_rgba = np.zeros((Hs, Ws, 4), dtype=np.float32)
+    sib1_depth = np.zeros((Hs, Ws), dtype=np.float32)
+    for du in range(-2, 3):
+        for dv in range(-2, 3):
+            sib1_rgba[v_centre + dv, u_sib1_pix + du] = [1.0, 0.0, 0.0, 1.0]
+            sib1_depth[v_centre + dv, u_sib1_pix + du] = 3.0  # closer occluder
+
+    sib2_rgba = np.zeros((Hs, Ws, 4), dtype=np.float32)
+    sib2_depth = np.zeros((Hs, Ws), dtype=np.float32)
+    for du in range(-2, 3):
+        for dv in range(-2, 3):
+            sib2_rgba[v_centre + dv, u_sib2_pix + du] = [0.0, 1.0, 0.0, 1.0]
+            sib2_depth[v_centre + dv, u_sib2_pix + du] = 5.0  # far surface
+
+    centre = {
+        "rgba": np.zeros((Hs, Ws, 4), dtype=np.float32),
+        "depth": np.zeros((Hs, Ws), dtype=np.float32),
+        "world_from_cam": centre_world_from_cam, "proj": proj,
+    }
+    sib1 = {
+        "rgba": sib1_rgba, "depth": sib1_depth,
+        "world_from_cam": sib1_world_from_cam, "proj": proj,
+    }
+    sib2 = {
+        "rgba": sib2_rgba, "depth": sib2_depth,
+        "world_from_cam": sib2_world_from_cam, "proj": proj,
+    }
+
+    # Identity canonical = centre cam → W projects to canonical NDC=0,
+    # i.e. canonical pixel (Hs/2, Ws/2). Use the source resolution as
+    # the canonical too (no super-frustum scaling — we want a clean
+    # geometric match for the test).
+    rgba, _depth, coverage, source = consolidate_layer_reverse(
+        views_sorted=[centre, sib1, sib2],
+        canonical_shape=(Hs, Ws),
+        canonical_cam_from_world=np.linalg.inv(centre_world_from_cam),
+        canonical_proj=proj,
+        rel_tol=DEFAULT_REVERSE_DEPTH_REL_TOL,
+    )
+
+    # The canonical pixel where W lands (sib2's far-surface splat — sib1
+    # splatted to a different canonical column because its closer-depth
+    # changed the world-point reconstruction).
+    cv, cu = Hs // 2, Ws // 2
+    assert coverage[cv, cu], "sib2 should have splatted W into canonical centre"
+    np.testing.assert_allclose(rgba[cv, cu, :3], [0.0, 1.0, 0.0], atol=1e-5)
+    assert source[cv, cu] == 2, (
+        f"expected sib2 (idx 2) after sib1 fails depth gate, got {source[cv, cu]}"
+    )
+
+
+def test_reverse_mapping_falls_back_to_pass1_when_no_view_passes():
+    """If every view fails both gates at a covered canonical pixel, the
+    reverse path leaves pass-1's RGBA untouched and writes the fallback
+    sentinel into source_mask."""
+    proj, world_from_cam = _identity_proj_and_world()
+    Hs, Ws = 16, 16
+
+    # Centre fully covered with magenta. Pass-1 records depth=5 +
+    # colour=magenta everywhere.
+    centre_rgba = np.full((Hs, Ws, 4), [1.0, 0.0, 1.0, 1.0], dtype=np.float32)
+    centre_depth = np.full((Hs, Ws), 5.0, dtype=np.float32)
+    centre = {
+        "rgba": centre_rgba, "depth": centre_depth,
+        "world_from_cam": world_from_cam, "proj": proj,
+    }
+
+    # Forcing rel_tol=0 makes the depth-consistency gate impossible to
+    # satisfy at float precision, so pass-2 falls back to pass-1's colour
+    # at every covered pixel.
+    rgba, _depth, coverage, source = consolidate_layer_reverse(
+        views_sorted=[centre],
+        canonical_shape=(Hs, Ws),
+        canonical_cam_from_world=np.linalg.inv(world_from_cam),
+        canonical_proj=proj,
+        rel_tol=0.0,
+    )
+
+    assert coverage.all()
+    np.testing.assert_allclose(
+        rgba[..., :3],
+        np.broadcast_to([1.0, 0.0, 1.0], (Hs, Ws, 3)),
+        atol=1e-5,
+    )
+    assert (source == REVERSE_FALLBACK_SOURCE).all()
