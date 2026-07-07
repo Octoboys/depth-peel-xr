@@ -221,6 +221,30 @@ class DEPTHPEELXR_PT_main(Panel):
                 text="Undo Cull",
                 icon="LOOP_BACK",
             )
+            col.separator(factor=1.5)
+            dec_row = col.row(align=True)
+            dec_row.enabled = cull_ready
+            dec_row.operator(
+                "depthpeelxr.decimate_all",
+                text="Decimate Layers",
+                icon="MOD_DECIM",
+            )
+            col.separator()
+            ratio_row = col.row(align=True)
+            ratio_row.enabled = cull_ready
+            ratio_row.prop(recon, "decimate_ratio")
+            col.separator()
+            angle_row = col.row(align=True)
+            angle_row.enabled = cull_ready
+            angle_row.prop(recon, "decimate_angle_limit")
+            col.separator()
+            undec_row = col.row(align=True)
+            undec_row.enabled = cull_ready
+            undec_row.operator(
+                "depthpeelxr.undo_decimate",
+                text="Undo Decimate",
+                icon="LOOP_BACK",
+            )
 
         project_box = layout.box()
         project_box.label(text="Project", icon="FILE_FOLDER")

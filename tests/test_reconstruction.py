@@ -725,3 +725,98 @@ def test_layer_mesh_to_displaced_empty():
     assert disp.vertices.shape == (0, 3)
     assert disp.polygons == []
     assert disp.poly_uvs.shape == (0, 2)
+
+
+# ---- boundary_verts (seam-lock indices) -------------------------------------
+
+def test_split_layer_mesh_populates_boundary_verts():
+    """After splitting, each half's `boundary_verts` indexes exactly the
+    verts on the shared edge — those with a coincident twin on the other
+    half. For non-shared verts (interior-only corners), the count stays
+    zero-based."""
+    leaves = [
+        QuadtreeLeaf(0, 0, 16, 16, "interior"),
+        QuadtreeLeaf(16, 0, 16, 16, "border"),
+    ]
+    mesh = build_layer_mesh(
+        leaves=leaves,
+        image_width=32, image_height=16,
+        half_w_plane=2.0, half_h_plane=1.0,
+        headplane_offset=1.5, layer_near=3.5,
+    )
+    interior, border = split_layer_mesh(mesh)
+    # Each half has 4 verts; two of them (the shared-edge corners) sit
+    # at coincident positions with the other half.
+    assert interior.boundary_verts.shape == (2,)
+    assert border.boundary_verts.shape == (2,)
+    # Positions of tagged verts must actually match between halves.
+    int_pts = {tuple(interior.vertices[i]) for i in interior.boundary_verts}
+    bord_pts = {tuple(border.vertices[i]) for i in border.boundary_verts}
+    assert int_pts == bord_pts
+
+
+def test_split_displaced_layer_mesh_populates_boundary_verts():
+    """Displaced-half `boundary_verts` covers every topological-boundary
+    vert of that half — a vert on any edge belonging to exactly one
+    polygon in the half. For a lone-quad half that's all 4 corners, so
+    both the seam with the other half AND the silhouette edge get
+    pinned when Decimate later consults the group."""
+    mesh = _build_two_quad_mesh()
+    interior, border = split_displaced_layer_mesh(mesh)
+    # Each half is one quad → 4 verts, all on the quad's perimeter →
+    # every vert is a topological-boundary vert.
+    assert interior.boundary_verts.shape == (4,)
+    assert border.boundary_verts.shape == (4,)
+    # The two verts on the shared centre edge still coincide across
+    # halves (that pair is a subset of both boundary_verts arrays).
+    int_pts = {tuple(interior.vertices[i]) for i in interior.boundary_verts}
+    bord_pts = {tuple(border.vertices[i]) for i in border.boundary_verts}
+    assert len(int_pts & bord_pts) == 2
+
+
+def test_split_displaced_layer_mesh_excludes_interior_shared_edges():
+    """A vert shared between two same-class polygons in the same half
+    sits on double-owner edges only along one axis — but any single-
+    owner edge through it still promotes it. Tested via a 4-quad row:
+    border-interior-interior-border. The two interior quads share the
+    x=32 edge (double-owner in the interior half), yet its two endpoint
+    verts stay boundary because they also touch the interior half's
+    perimeter top/bottom edges. The complementary case — a genuinely
+    non-perimeter vert — needs a 2x2+ interior island; here we just
+    verify the perimeter contract."""
+    leaves = [
+        QuadtreeLeaf(0,  0, 16, 16, "border"),
+        QuadtreeLeaf(16, 0, 16, 16, "interior"),
+        QuadtreeLeaf(32, 0, 16, 16, "interior"),
+        QuadtreeLeaf(48, 0, 16, 16, "border"),
+    ]
+    depth, coverage = _flat_depth(64, 16, HO)
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    interior, _ = split_displaced_layer_mesh(mesh)
+    # Interior half has 6 unique verts (two adjacent quads). All 6 sit
+    # on the perimeter of the 2-quad strip, so all 6 are boundary.
+    assert interior.vertices.shape == (6, 3)
+    assert interior.boundary_verts.shape == (6,)
+
+
+def test_filter_displaced_mesh_preserves_boundary_verts_through_compaction():
+    """A subsequent cull-filter pass on a half must remap boundary_verts
+    through the vert compaction. Boundary verts whose polygons all got
+    culled are dropped; the survivors point at their new compacted
+    indices."""
+    mesh = _build_two_quad_mesh()
+    interior, _ = split_displaced_layer_mesh(mesh)
+    # Lone-quad half: all 4 corners are boundary (topological detection).
+    assert interior.boundary_verts.size == 4
+    # Cull removes the only polygon → boundary_verts collapses to empty.
+    culled = filter_displaced_mesh(interior, np.array([False]))
+    assert culled.boundary_verts.size == 0
+    # Keep-all pass returns the mesh unchanged (short-circuit path in
+    # filter_displaced_mesh), boundary_verts identical.
+    kept = filter_displaced_mesh(interior, np.array([True]))
+    np.testing.assert_array_equal(kept.boundary_verts, interior.boundary_verts)

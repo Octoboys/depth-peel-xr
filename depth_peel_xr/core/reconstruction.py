@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warnings
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -46,11 +46,20 @@ class LayerMesh:
     quad). Flat impostors don't need a manifold mesh — sharing would
     force per-vertex class disambiguation when adjacent leaves differ
     in interior/border.
+
+    boundary_verts: (K,) int64 indices into `vertices` — verts on the
+      shared edge between this half and the other half after
+      `split_layer_mesh`. Populated only by the splitter; empty
+      otherwise. Used to pin those verts during Decimate so the two
+      halves' shared edge doesn't diverge.
     """
     vertices: np.ndarray
     faces: np.ndarray
     uvs: np.ndarray
     face_classes: np.ndarray
+    boundary_verts: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=np.int64)
+    )
 
 
 @dataclass(frozen=True)
@@ -74,11 +83,22 @@ class DisplacedLayerMesh:
       flat_uvs)` call suffices.
     poly_classes: (P,) object array of 'interior' / 'border' inherited
       from the leaf that emitted the polygon.
+    boundary_verts: (K,) int64 indices into `vertices` — verts on any
+      topological-boundary edge of this half's mesh (edge belonging to
+      exactly one polygon). Covers BOTH the interior/border seam
+      (shared with the other half) AND the silhouette (outer edge
+      facing uncovered pixels). Populated by `split_displaced_layer_mesh`
+      and preserved through `filter_displaced_mesh`; empty otherwise.
+      Used to pin those verts during Decimate so neither the seam nor
+      the silhouette degrades under aggressive collapse.
     """
     vertices: np.ndarray
     polygons: list[tuple[int, ...]]
     poly_uvs: np.ndarray
     poly_classes: np.ndarray
+    boundary_verts: np.ndarray = field(
+        default_factory=lambda: np.empty(0, dtype=np.int64)
+    )
 
 
 def build_layer_mesh(
@@ -139,6 +159,68 @@ def build_layer_mesh(
     )
 
 
+def _coincident_vert_indices(
+    verts_a: np.ndarray, verts_b: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (indices_into_a, indices_into_b) of verts whose float64
+    bit-patterns match a vert on the other array.
+
+    Used by the flat splitter — flat halves have non-shared per-face
+    verts, so topological adjacency can't find the shared edge; we fall
+    back to positional coincidence. The displaced splitter uses the
+    stricter topological approach instead (see
+    `_topological_boundary_vert_indices`), which also captures the
+    silhouette that positional coincidence would miss.
+    """
+    if verts_a.size == 0 or verts_b.size == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    a = np.ascontiguousarray(verts_a, dtype=np.float64)
+    b = np.ascontiguousarray(verts_b, dtype=np.float64)
+    row_dtype = np.dtype((np.void, a.strides[0]))
+    ha = a.view(row_dtype).ravel()
+    hb = b.view(row_dtype).ravel()
+    a_hits = np.isin(ha, hb)
+    b_hits = np.isin(hb, ha)
+    return (
+        np.nonzero(a_hits)[0].astype(np.int64),
+        np.nonzero(b_hits)[0].astype(np.int64),
+    )
+
+
+def _topological_boundary_vert_indices(
+    n_verts: int, polygons: list[tuple[int, ...]]
+) -> np.ndarray:
+    """Return sorted unique int64 indices of verts on any topological-
+    boundary edge — an edge belonging to exactly one polygon. For a
+    shared-vert mesh (the displaced reconstruction), this identifies
+    the outline of the mesh: interior/border seam AND silhouette both
+    qualify because both are single-owner edges after the interior/
+    border split.
+
+    Only valid on shared-vert meshes. In the flat mesh every quad has
+    4 fresh verts so every edge is single-owner — the helper would mark
+    every vert as boundary. Flat uses `_coincident_vert_indices`
+    instead.
+    """
+    if not polygons or n_verts == 0:
+        return np.empty(0, dtype=np.int64)
+    edge_count: dict[tuple[int, int], int] = defaultdict(int)
+    for poly in polygons:
+        n = len(poly)
+        for i in range(n):
+            a, b = int(poly[i]), int(poly[(i + 1) % n])
+            key = (a, b) if a < b else (b, a)
+            edge_count[key] += 1
+    boundary: set[int] = set()
+    for (a, b), count in edge_count.items():
+        if count == 1:
+            boundary.add(a)
+            boundary.add(b)
+    if not boundary:
+        return np.empty(0, dtype=np.int64)
+    return np.fromiter(sorted(boundary), dtype=np.int64, count=len(boundary))
+
+
 def layer_mesh_to_displaced(mesh: LayerMesh) -> DisplacedLayerMesh:
     """Repackage a `LayerMesh` (quads, separate per-leaf verts) into
     `DisplacedLayerMesh` shape so callers can treat both reconstruction
@@ -157,6 +239,7 @@ def layer_mesh_to_displaced(mesh: LayerMesh) -> DisplacedLayerMesh:
         polygons=polygons,
         poly_uvs=poly_uvs,
         poly_classes=mesh.face_classes.copy(),
+        boundary_verts=mesh.boundary_verts.copy(),
     )
 
 
@@ -166,6 +249,12 @@ def split_layer_mesh(mesh: LayerMesh) -> tuple[LayerMesh, LayerMesh]:
     verts those faces own — verts aren't shared, so the split is a clean
     per-face partition with no vert remap needed beyond a contiguous
     reindex.
+
+    Both halves get their `boundary_verts` populated with indices of
+    verts whose world position also appears in the other half (i.e.
+    verts sitting on the shared edge between interior and border leaves,
+    duplicated across the two objects). These pinpoint the seam that
+    Decimate must not pull apart.
     """
     n_faces = mesh.faces.shape[0]
     if n_faces == 0:
@@ -200,7 +289,27 @@ def split_layer_mesh(mesh: LayerMesh) -> tuple[LayerMesh, LayerMesh]:
             face_classes=mesh.face_classes[mask].copy(),
         )
 
-    return _take(is_interior), _take(~is_interior)
+    interior = _take(is_interior)
+    border = _take(~is_interior)
+    a_boundary, b_boundary = _coincident_vert_indices(
+        interior.vertices, border.vertices
+    )
+    # Frozen dataclass — repackage with the boundary field filled in.
+    interior = LayerMesh(
+        vertices=interior.vertices,
+        faces=interior.faces,
+        uvs=interior.uvs,
+        face_classes=interior.face_classes,
+        boundary_verts=a_boundary,
+    )
+    border = LayerMesh(
+        vertices=border.vertices,
+        faces=border.faces,
+        uvs=border.uvs,
+        face_classes=border.face_classes,
+        boundary_verts=b_boundary,
+    )
+    return interior, border
 
 
 def split_displaced_layer_mesh(
@@ -213,6 +322,16 @@ def split_displaced_layer_mesh(
     halves at the same world position (border-flatness already snapped
     the interior side to the border's foreground depth, so the duplicate
     coincides geometrically — no visual seam).
+
+    Each half's `boundary_verts` gets populated by topological-boundary
+    detection on its own polygons — every vert on an edge belonging to
+    exactly one polygon qualifies. For the interior half that's the
+    seam with the border half (any interior/border shared edge is
+    single-owner after border polys are gone). For the border half
+    that's the seam PLUS the silhouette (the outer edge of the coverage
+    region has no polygon on the other side either). Both classes of
+    edge get pinned when Decimate later reads the group, so neither the
+    seam nor the silhouette degrades under aggressive collapse.
     """
     if not mesh.polygons:
         empty = DisplacedLayerMesh(
@@ -226,10 +345,29 @@ def split_displaced_layer_mesh(
     is_interior = np.array(
         [cls == "interior" for cls in mesh.poly_classes], dtype=bool
     )
-    return (
-        filter_displaced_mesh(mesh, is_interior),
-        filter_displaced_mesh(mesh, ~is_interior),
+    interior = filter_displaced_mesh(mesh, is_interior)
+    border = filter_displaced_mesh(mesh, ~is_interior)
+    a_boundary = _topological_boundary_vert_indices(
+        interior.vertices.shape[0], interior.polygons
     )
+    b_boundary = _topological_boundary_vert_indices(
+        border.vertices.shape[0], border.polygons
+    )
+    interior = DisplacedLayerMesh(
+        vertices=interior.vertices,
+        polygons=interior.polygons,
+        poly_uvs=interior.poly_uvs,
+        poly_classes=interior.poly_classes,
+        boundary_verts=a_boundary,
+    )
+    border = DisplacedLayerMesh(
+        vertices=border.vertices,
+        polygons=border.polygons,
+        poly_uvs=border.poly_uvs,
+        poly_classes=border.poly_classes,
+        boundary_verts=b_boundary,
+    )
+    return interior, border
 
 
 def filter_displaced_mesh(
@@ -289,7 +427,26 @@ def filter_displaced_mesh(
         polygons=new_polygons,
         poly_uvs=np.concatenate(new_uvs_chunks, axis=0),
         poly_classes=np.asarray(new_classes, dtype=object),
+        boundary_verts=_remap_boundary_verts(
+            mesh.boundary_verts, used_arr, remap
+        ),
     )
+
+
+def _remap_boundary_verts(
+    boundary_verts: np.ndarray, used_arr: np.ndarray, remap: np.ndarray
+) -> np.ndarray:
+    """Filter+reindex a boundary_verts array through the same vert
+    compaction that `filter_displaced_mesh` performs. Boundary verts not
+    surviving compaction are dropped."""
+    if boundary_verts.size == 0:
+        return np.empty(0, dtype=np.int64)
+    survives = np.zeros(remap.shape[0], dtype=bool)
+    survives[used_arr] = True
+    kept = boundary_verts[survives[boundary_verts]]
+    if kept.size == 0:
+        return np.empty(0, dtype=np.int64)
+    return remap[kept].astype(np.int64, copy=False)
 
 
 def _compute_corner_depths(

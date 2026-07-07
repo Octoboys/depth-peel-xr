@@ -272,6 +272,18 @@ def _on_max_quad_size_change(self, context):
     _last_quad_size["max"] = self.max_quad_size
 
 
+def _on_decimate_ratio_change(self, context):
+    # Lazy-import to avoid pulling the operators package during add-on
+    # registration (properties register before operators).
+    from .operators.decimate import apply_ratio_to_existing_opaque_modifiers
+    apply_ratio_to_existing_opaque_modifiers(self.decimate_ratio)
+
+
+def _on_decimate_angle_change(self, context):
+    from .operators.decimate import apply_angle_to_existing_alpha_modifiers
+    apply_angle_to_existing_alpha_modifiers(self.decimate_angle_limit)
+
+
 class ReconstructionProps(PropertyGroup):
     max_quad_size: IntProperty(
         name="Max Quad Size",
@@ -305,6 +317,42 @@ class ReconstructionProps(PropertyGroup):
         precision=3,
         step=1,
         unit="LENGTH",
+    )
+    decimate_ratio: FloatProperty(
+        name="Opaque Decimate Ratio",
+        description=(
+            "COLLAPSE ratio applied to each _opaque half. Lower = more "
+            "aggressive vert reduction on the interior surface. Every "
+            "non-boundary vert is tagged into the dpxr_decimate_area "
+            "group at build time, so the seam and any silhouette stay "
+            "pinned regardless of ratio. Adjusts existing modifiers live."
+        ),
+        default=0.25,
+        min=0.0,
+        max=1.0,
+        precision=2,
+        step=1,
+        update=_on_decimate_ratio_change,
+    )
+    decimate_angle_limit: FloatProperty(
+        name="Alpha Decimate Angle",
+        description=(
+            "PLANAR DISSOLVE angle limit applied to each _alpha half. "
+            "Adjacent border quads whose dihedral is under this angle "
+            "merge into a single n-gon — Decimate's COLLAPSE mode stalls "
+            "on the one-quad-wide silhouette strip (every vert boundary), "
+            "so the alpha half runs DISSOLVE instead. Boundary edges "
+            "(seam + silhouette) can't be dissolved, so shape is "
+            "preserved automatically. Adjusts existing modifiers live."
+        ),
+        default=0.5235988,  # 30 degrees
+        min=0.0,
+        soft_max=1.0472,  # 60 degrees
+        precision=3,
+        step=1,
+        subtype="ANGLE",
+        unit="ROTATION",
+        update=_on_decimate_angle_change,
     )
 
 

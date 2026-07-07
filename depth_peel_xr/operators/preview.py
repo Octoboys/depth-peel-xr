@@ -132,12 +132,95 @@ def _build_preview_material(
     return mat
 
 
+def _build_world_projected_uv_chain(
+    nt: bpy.types.NodeTree,
+    portal: bpy.types.Object,
+    ho: float,
+    half_w_p: float,
+    half_h_p: float,
+) -> bpy.types.NodeSocket:
+    """Node chain: Texture Coordinate(→object=portal) → portal-local (x,y,z)
+    → canonical UV via the forward of `inverse_canonical_projection`.
+
+    Result socket carries UV as a Vector (u, v, 0). Feed into an Image
+    Texture node's Vector input to replace the mesh's stored UVs — texels
+    then track world position, so vert moves (e.g. from Decimate) don't
+    slide texture across the surface.
+    """
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    tc.object = portal
+
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(tc.outputs["Object"], sep.inputs["Vector"])
+
+    ho_half = 0.5 * ho
+    # u = 0.5 − x·(ho / (4·hw))·(1/d) — precompute the negative
+    # sign into the multiplier so a single Multiply-Add resolves u.
+    ku = -ho / (4.0 * half_w_p)
+    kv = ho / (4.0 * half_h_p)
+
+    # d = ho/2 − y_portal
+    d_node = nt.nodes.new("ShaderNodeMath")
+    d_node.operation = "SUBTRACT"
+    d_node.inputs[0].default_value = ho_half
+    nt.links.new(sep.outputs["Y"], d_node.inputs[1])
+
+    # 1/d
+    inv_d = nt.nodes.new("ShaderNodeMath")
+    inv_d.operation = "DIVIDE"
+    inv_d.inputs[0].default_value = 1.0
+    nt.links.new(d_node.outputs["Value"], inv_d.inputs[1])
+
+    # x · ku
+    x_scaled = nt.nodes.new("ShaderNodeMath")
+    x_scaled.operation = "MULTIPLY"
+    nt.links.new(sep.outputs["X"], x_scaled.inputs[0])
+    x_scaled.inputs[1].default_value = ku
+
+    # u = 0.5 + (x · ku) · (1/d)
+    u_node = nt.nodes.new("ShaderNodeMath")
+    u_node.operation = "MULTIPLY_ADD"
+    nt.links.new(x_scaled.outputs["Value"], u_node.inputs[0])
+    nt.links.new(inv_d.outputs["Value"], u_node.inputs[1])
+    u_node.inputs[2].default_value = 0.5
+
+    # z · kv
+    z_scaled = nt.nodes.new("ShaderNodeMath")
+    z_scaled.operation = "MULTIPLY"
+    nt.links.new(sep.outputs["Z"], z_scaled.inputs[0])
+    z_scaled.inputs[1].default_value = kv
+
+    # v = 0.5 + (z · kv) · (1/d)
+    v_node = nt.nodes.new("ShaderNodeMath")
+    v_node.operation = "MULTIPLY_ADD"
+    nt.links.new(z_scaled.outputs["Value"], v_node.inputs[0])
+    nt.links.new(inv_d.outputs["Value"], v_node.inputs[1])
+    v_node.inputs[2].default_value = 0.5
+
+    combine = nt.nodes.new("ShaderNodeCombineXYZ")
+    nt.links.new(u_node.outputs["Value"], combine.inputs["X"])
+    nt.links.new(v_node.outputs["Value"], combine.inputs["Y"])
+    return combine.outputs["Vector"]
+
+
 def _build_opaque_material(
-    name: str, image: bpy.types.Image
+    name: str,
+    image: bpy.types.Image,
+    portal: bpy.types.Object,
+    ho: float,
+    half_w_p: float,
+    half_h_p: float,
 ) -> bpy.types.Material:
     """Emission only — for interior halves. No alpha test, no transparent
     BSDF; early-z friendly for the runtime, and acts as a clean occluder
-    for the cull's rasterised closer-surface."""
+    for the cull's rasterised closer-surface.
+
+    UVs are computed in-shader from world-space vertex position via the
+    portal's local frame (see `_build_world_projected_uv_chain`) rather
+    than sampled from the mesh's stored UV layer. This decouples texel
+    flow from mesh topology so aggressive Decimate on the opaque half
+    won't cause texture swimming — the stored UVs stay on the mesh but
+    the material ignores them."""
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     mat.surface_render_method = "DITHERED"
@@ -148,6 +231,10 @@ def _build_opaque_material(
     out = nt.nodes.new("ShaderNodeOutputMaterial")
     tex = nt.nodes.new("ShaderNodeTexImage")
     tex.image = image
+    uv_socket = _build_world_projected_uv_chain(
+        nt, portal, ho, half_w_p, half_h_p
+    )
+    nt.links.new(uv_socket, tex.inputs["Vector"])
     emission = nt.nodes.new("ShaderNodeEmission")
     emission.inputs["Strength"].default_value = 1.0
 

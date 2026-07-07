@@ -141,8 +141,15 @@ def _rebuild_object_from_mesh_arrays(
     if image is None or not mesh_arrays.polygons:
         # Image got cleaned up, or the half is empty — nothing to rebuild.
         return
-    builder = _build_opaque_material if opaque else _build_preview_material
-    material = builder(mat_name, image)
+    if opaque:
+        material = _build_opaque_material(
+            mat_name, image, portal,
+            rig.headplane_offset,
+            rig.portal_width * 0.5,
+            rig.portal_height * 0.5,
+        )
+    else:
+        material = _build_preview_material(mat_name, image)
     _build_displaced_recon_mesh_object(
         name, mesh_arrays, portal, material, coll
     )

@@ -61,6 +61,13 @@ from .recon_cache import set_layer_cache
 _RECON_PREFIX = "dpxr_recon_layer_"
 _OPAQUE_SUFFIX = "_opaque"
 _ALPHA_SUFFIX = "_alpha"
+
+# Vertex group holding the verts safe for a Decimate-style modifier to
+# collapse — everything EXCEPT the interior/border shared edge. Named
+# from the group's semantic ("this is the area to decimate") so a user
+# who adds Decimate manually and picks the group by name gets correct
+# pinning of the seam without also needing to toggle Invert Vertex Group.
+DECIMATE_AREA_GROUP = "dpxr_decimate_area"
 _RECON_TIMER_INTERVAL = 0.05
 # Canonical-alpha threshold above which a pixel counts as covered for
 # quadtree subdivision. Consolidation packs anti-aliased silhouette alpha
@@ -145,6 +152,32 @@ def _load_canonical_depth(exr_path: Path) -> np.ndarray:
         bpy.data.images.remove(img)
 
 
+def _apply_decimate_area_vertex_group(
+    obj: bpy.types.Object, boundary_verts: np.ndarray
+) -> None:
+    """Tag every vert on `obj` that is NOT part of the interior/border
+    shared edge into `DECIMATE_AREA_GROUP` with weight 1.0.
+
+    Consumers (users adding a Decimate modifier) set
+    `modifier.vertex_group = DECIMATE_AREA_GROUP` and leave Invert off —
+    group weight scales collapse influence, so weight-1 verts decimate
+    normally while the unlisted boundary verts stay pinned at weight 0.
+    Empty `boundary_verts` skips group creation (nothing to protect ⇒
+    the modifier can just decimate the whole mesh)."""
+    if boundary_verts.size == 0:
+        return
+    n_verts = len(obj.data.vertices)
+    if n_verts == 0:
+        return
+    mask = np.ones(n_verts, dtype=bool)
+    mask[boundary_verts] = False
+    non_boundary = np.nonzero(mask)[0]
+    if non_boundary.size == 0:
+        return
+    vg = obj.vertex_groups.new(name=DECIMATE_AREA_GROUP)
+    vg.add(non_boundary.tolist(), 1.0, "REPLACE")
+
+
 def _build_recon_mesh_object(
     name: str,
     mesh_arrays: LayerMesh,
@@ -176,6 +209,7 @@ def _build_recon_mesh_object(
     obj = bpy.data.objects.new(name, mesh)
     obj.parent = portal
     obj.matrix_parent_inverse = Matrix.Identity(4)
+    _apply_decimate_area_vertex_group(obj, mesh_arrays.boundary_verts)
     link_unique(obj, coll)
     return obj
 
@@ -210,6 +244,7 @@ def _build_displaced_recon_mesh_object(
     obj = bpy.data.objects.new(name, mesh)
     obj.parent = portal
     obj.matrix_parent_inverse = Matrix.Identity(4)
+    _apply_decimate_area_vertex_group(obj, mesh_arrays.boundary_verts)
     link_unique(obj, coll)
     return obj
 
@@ -289,7 +324,8 @@ class DEPTHPEELXR_OT_reconstruct_flat(Operator):
             )
             interior_half, border_half = split_layer_mesh(mesh_arrays)
             opaque_mat = _build_opaque_material(
-                f"{base_name}{_OPAQUE_SUFFIX}_mat", image
+                f"{base_name}{_OPAQUE_SUFFIX}_mat", image,
+                portal, ho, half_w_p, half_h_p,
             )
             alpha_mat = _build_preview_material(
                 f"{base_name}{_ALPHA_SUFFIX}_mat", image
@@ -487,7 +523,8 @@ class DEPTHPEELXR_OT_reconstruct_displaced(Operator):
 
         t0 = perf_counter()
         opaque_mat = _build_opaque_material(
-            f"{base_name}{_OPAQUE_SUFFIX}_mat", image
+            f"{base_name}{_OPAQUE_SUFFIX}_mat", image,
+            self._portal, self._ho, self._half_w_p, self._half_h_p,
         )
         alpha_mat = _build_preview_material(
             f"{base_name}{_ALPHA_SUFFIX}_mat", image
