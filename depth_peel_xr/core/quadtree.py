@@ -8,10 +8,14 @@ Silhouette split rule:
 
 Optional depth-variance subdivision for `interior` leaves: when a
 canonical depth array and tolerance are passed in, a fully-covered quad
-whose `max - min` depth exceeds the tolerance subdivides further (down
-to min_quad_size). Tile-size still caps the largest interior leaf in
-low-variance regions; the variance check only refines from there. When
-`depth` or `depth_tol` is None, only the silhouette split applies.
+whose `percentile(95) - percentile(5)` depth spread exceeds the tolerance
+subdivides further (down to min_quad_size). Percentile spread beats raw
+`max - min` because stray single-pixel outliers at silhouette boundaries
+(common after forward-splat consolidation) don't drag the variance check
+across the tolerance on regions that are visually flat. Tile-size still
+caps the largest interior leaf in low-variance regions; the variance
+check only refines from there. When `depth` or `depth_tol` is None, only
+the silhouette split applies.
 
 Top-level structure is a **tile grid** — the canonical is divided into
 TxT square tiles before the 4-way subdivision runs within each. Without
@@ -70,10 +74,19 @@ def _coverage_state(mask: np.ndarray, x: int, y: int, w: int, h: int) -> str:
 def _depth_within_tol(
     depth: np.ndarray, x: int, y: int, w: int, h: int, tol: float
 ) -> bool:
-    """True if max-min depth across the region is <= tol. Region is assumed
-    fully covered (caller checks coverage before invoking)."""
+    """True if p95 - p5 depth across the region is <= tol. Region is assumed
+    fully covered (caller checks coverage before invoking).
+
+    Uses percentile spread (not raw max - min) so single-pixel depth
+    outliers — common at silhouette boundaries after forward-splat
+    consolidation — don't trip the variance check on regions that are
+    visually flat. Outliers making up less than ~5% of the region are
+    filtered by the p5/p95 tails; anything more common than that lands
+    inside the tails and still triggers subdivision, which is correct
+    for genuine within-coverage depth features."""
     region = depth[y : y + h, x : x + w]
-    return float(region.max() - region.min()) <= tol
+    p5, p95 = np.percentile(region, [5.0, 95.0])
+    return float(p95 - p5) <= tol
 
 
 def _subdivide_tile(
@@ -137,10 +150,10 @@ def build_quadtree(
 
     Variance subdivision: if both `depth` (a (H, W) float array aligned
     with `coverage_mask`) and `depth_tol` are passed, fully-covered
-    quads whose `max - min` depth exceeds `depth_tol` subdivide further
-    until variance is within tolerance or `min_quad_size` is reached.
-    Pass either as None to disable variance refinement (silhouette-only
-    splits).
+    quads whose `percentile(95) - percentile(5)` depth spread exceeds
+    `depth_tol` subdivide further until variance is within tolerance or
+    `min_quad_size` is reached. Pass either as None to disable variance
+    refinement (silhouette-only splits).
     """
     if coverage_mask.ndim != 2:
         raise ValueError(f"coverage_mask must be 2D, got shape {coverage_mask.shape}")

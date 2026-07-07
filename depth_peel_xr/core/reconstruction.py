@@ -15,6 +15,7 @@ responsible for hand-off to `bpy.types.Mesh`.
 
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Sequence
@@ -296,48 +297,49 @@ def _compute_corner_depths(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (corner_depth, corner_valid), both shape (H+1, W+1).
 
-    Each corner takes the MIN depth over the up-to-4 covered cells in
-    its 2×2 stencil — Z-buffer convention. MIN beats MEAN at silhouettes
-    and within-coverage depth jumps because mean averaging blends fg
-    and bg, leaving the corner stranded at a fictitious mid-depth where
-    bridge tris fold the wrong way.
+    Each corner takes the MEDIAN depth over covered cells in a 4×4
+    stencil symmetric around the corner (rows r-2..r+1, cols c-2..c+1
+    in cell-index space — 16 cells, 2 in each direction from the pixel
+    boundary the corner sits on). MEDIAN (not MIN) so a handful of
+    silhouette-side depth-EXR outliers — common at coverage boundaries
+    after forward-splat consolidation — don't drag interior corners
+    onto the foreground surface. Outliers within a ~6-of-16 minority
+    are outvoted; a genuine depth boundary (~half-and-half split) lands
+    the corner at the mid-depth of the two clusters, which is fine for
+    interior classification because real silhouettes get routed through
+    border leaves whose flatness pass then unconditionally snaps them
+    to the closer surface.
 
-    Dilate-once fallback: if a corner has no covered cell in its 2×2
-    stencil (rare but possible on thin features or at AA bands the
-    coverage threshold dropped), expand to a 4×4 stencil before giving
-    up. Only fully-uncovered 4×4 windows mark `corner_valid = False`,
-    in which case the caller falls back to the layer-mean depth.
+    Corner is invalid only when every cell in the 4×4 is uncovered, in
+    which case the caller falls back through leaf-local mean →
+    layer-wide mean → zero.
     """
     H, W = canonical_depth.shape
     pad_d = np.zeros((H + 4, W + 4), dtype=np.float64)
     pad_c = np.zeros((H + 4, W + 4), dtype=bool)
     pad_d[2 : H + 2, 2 : W + 2] = canonical_depth
     pad_c[2 : H + 2, 2 : W + 2] = canonical_coverage
-    # Uncovered cells masked to +inf so MIN ignores them.
-    masked = np.where(pad_c, pad_d, np.inf)
+    # Uncovered cells masked to NaN so nanmedian ignores them.
+    masked = np.where(pad_c, pad_d, np.nan)
 
-    # 2×2 stencil: cells at (r-1+s, c-1+t) for s, t in {0, 1}; in padded
-    # coords with offset +2 that's pad_d[1+s : 1+s+H+1, 1+t : 1+t+W+1].
-    inner = np.minimum.reduce([
-        masked[1 + s : 1 + s + H + 1, 1 + t : 1 + t + W + 1]
-        for s in range(2)
-        for t in range(2)
-    ])
-
-    if not np.isfinite(inner).all():
-        # 4×4 stencil: cells at (r-2+s, c-2+t) for s, t in {0..3}.
-        outer = np.minimum.reduce([
+    # 4×4 stencil symmetric around each corner: cells at (r-2+s, c-2+t)
+    # for s, t in {0..3}; in padded coords with offset +2 that's
+    # masked[s : s + H + 1, t : t + W + 1].
+    stack = np.stack(
+        [
             masked[s : s + H + 1, t : t + W + 1]
             for s in range(4)
             for t in range(4)
-        ])
-        corner_depth = np.where(np.isfinite(inner), inner, outer)
-    else:
-        corner_depth = inner
+        ],
+        axis=-1,
+    )
+    # All-uncovered stencils → NaN + "All-NaN slice encountered" warning;
+    # suppress and let the caller handle the invalid mask.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        corner_depth = np.nanmedian(stack, axis=-1)
 
     corner_valid = np.isfinite(corner_depth)
-    # Replace any remaining +inf with 0 so the caller's `np.where(valid,
-    # depth, layer_mean)` doesn't propagate inf.
     corner_depth = np.where(corner_valid, corner_depth, 0.0)
     return corner_depth, corner_valid
 
@@ -360,12 +362,16 @@ def build_displaced_layer_mesh(
     is the boolean mask of pixels actually filled by capture+consolidate.
 
     Vertex world position is computed by `inverse_canonical_projection`
-    using a per-corner depth that takes MIN over covered cells in a 2×2
-    stencil (Z-buffer convention — closer surface wins at silhouettes
-    and within-coverage depth jumps). Dilates to 4×4 if the inner
-    stencil has no covered neighbour.
+    using a per-corner depth that takes MEDIAN over covered cells in a
+    4×4 stencil symmetric around the corner (16 cells, 2 in each
+    direction from the pixel boundary the corner sits on). Median beats
+    the older MIN at interior corners near silhouettes: a stray
+    foreground-side outlier from forward-splat consolidation used to
+    yank the corner onto the closer surface, shifting texture inward
+    via the canonical-NDC → world reprojection. Median outvotes such
+    outliers as long as they're a ~6-of-16 minority.
 
-    Three-tier fallback for corners that still come out invalid:
+    Three-tier fallback for corners the 4×4 stencil can't resolve:
       1. Average of the leaf's *own* valid corner depths (per the user's
          "match the rest of the quad" rule). For shared corners owned by
          multiple leaves, average those leaves' per-leaf averages.
@@ -376,13 +382,13 @@ def build_displaced_layer_mesh(
     Final pass — **border-quad flatness**: every border-classified
     leaf's 4 corners snap to the leaf's MIN over its own covered cells
     (the closest visible foreground surface in the leaf's pixel region).
-    Multiple border leaves owning a shared corner resolve via MIN. This
-    keeps silhouette cards co-planar in 3D regardless of stencil noise
-    across corners (which is otherwise common in the sparse super-
-    frustum annulus where each canonical pixel comes from a different
-    sibling forward-splat). Corners shared between border and interior
-    leaves get pulled to the border's foreground depth too — small loss
-    of interior stencil detail right at the silhouette edge in exchange
+    Multiple border leaves owning a shared corner resolve via MIN. Border
+    flatness stays MIN-based deliberately — silhouette cards must be
+    co-planar in 3D regardless of stencil noise across corners, and
+    the border classification already localises this policy to the
+    silhouette edge. Corners shared between border and interior leaves
+    get pulled to the border's foreground depth too — small loss of
+    interior stencil detail right at the silhouette edge in exchange
     for visually flat silhouette quads from any XR viewpoint.
     """
     if canonical_depth.shape != canonical_coverage.shape:

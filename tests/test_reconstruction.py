@@ -386,10 +386,15 @@ def test_displaced_border_pulls_shared_interior_corner_forward():
     assert n_bg == 2
 
 
-def test_displaced_min_over_depth_jump_picks_foreground():
-    """At a within-coverage depth jump (fg|bg both covered with different
-    depths), the shared corner takes MIN — foreground depth wins so
-    silhouettes don't bleed backward toward the average."""
+def test_displaced_median_at_50_50_depth_jump_lands_at_midpoint():
+    """At a 50/50 depth split between two adjacent interior leaves, the
+    shared corner's 4×4 stencil sees an equal number of fg and bg cells,
+    so the MEDIAN lands at the midpoint. This is the intended behaviour
+    for the median rule — a real silhouette crossing an interior/interior
+    boundary is not something the corner stencil is asked to resolve;
+    real silhouettes get classified as border leaves and snapped to
+    fg depth by the border-flatness pass. Recorded here to lock in the
+    change from the old MIN-picks-foreground behaviour."""
     H = W = 8
     leaves = [
         QuadtreeLeaf(0, 0, 4, 8, "interior"),  # left half (fg, depth = HO)
@@ -407,23 +412,60 @@ def test_displaced_min_over_depth_jump_picks_foreground():
     # 6 unique corners: x ∈ {0, 4, 8}, y ∈ {0, 8}. Shared at x=4.
     assert mesh.vertices.shape == (6, 3)
     fg_y = 0.5 * HO - HO         # = -1
+    mid_y = 0.5 * HO - 1.5 * HO  # = -2
     bg_y = 0.5 * HO - 2.0 * HO   # = -3
     ys = mesh.vertices[:, 1]
-    # Shared corners (x=4) take MIN(fg, bg) = fg → 4 verts at fg_y
-    # (left-edge x=0 corners + shared x=4 corners), 2 verts at bg_y
-    # (right-edge x=8 corners only).
-    assert int(np.isclose(ys, fg_y).sum()) == 4
+    # Left-only corners (x=0) → 4×4 stencil is entirely inside the fg
+    # region (cells cols -2..1) → median = HO → 2 verts at fg_y.
+    # Right-only corners (x=8) → stencil entirely inside bg region →
+    # median = 2·HO → 2 verts at bg_y.
+    # Shared corners (x=4) → stencil straddles the split 8-covered-fg +
+    # 8-covered-bg → median = 1.5·HO → 2 verts at mid_y.
+    assert int(np.isclose(ys, fg_y).sum()) == 2
+    assert int(np.isclose(ys, mid_y).sum()) == 2
     assert int(np.isclose(ys, bg_y).sum()) == 2
 
 
-def test_displaced_dilate_fallback_finds_far_neighbour():
-    """A corner whose 2x2 stencil is fully uncovered but whose 4x4
-    stencil has covered cells uses the dilated stencil (MIN over those
-    cells) instead of falling back to layer-mean."""
-    # Coverage occupies a single pixel in the bottom-right area; a
-    # corner at (0, 0) finds nothing in 2x2, nothing in 4x4 → falls
-    # back to layer-mean. A corner at (4, 4) finds the covered pixel in
-    # its 4x4 (offsets 2..3, 2..3) → MIN = its depth.
+def test_displaced_median_rejects_single_pixel_outlier():
+    """The point of the median rule: an interior corner with 15 covered
+    cells at background depth and one stray foreground outlier in its
+    4×4 stencil gets the BG depth, not the FG outlier. This is the
+    common case at silhouette edges after forward-splat consolidation —
+    a single anomalous depth pixel used to yank the corner onto the
+    foreground surface under the old MIN rule."""
+    H = W = 8
+    # Fully covered layer at bg depth, with a single stray fg pixel at
+    # (row=3, col=3) — falls inside the 4×4 stencil of the corner at
+    # pixel (4, 4) (cells rows 2..5, cols 2..5).
+    coverage = np.ones((H, W), dtype=bool)
+    depth = np.full((H, W), 2.0 * HO, dtype=np.float32)
+    depth[3, 3] = HO  # single fg outlier
+
+    # Small interior leaf whose TL corner sits exactly at the outlier's
+    # 4×4 stencil centre. Depth-variance check would trigger a split
+    # in reality; here we just probe the stencil directly.
+    leaves = [QuadtreeLeaf(4, 4, 2, 2, "interior")]
+    mesh = build_displaced_layer_mesh(
+        leaves=leaves,
+        canonical_depth=depth,
+        canonical_coverage=coverage,
+        half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
+    )
+    # TL corner (4, 4): 4×4 stencil = rows 2..5, cols 2..5 → 16 cells;
+    # 15 at 2·HO, 1 at HO. Median → 2·HO. y = HO/2 - 2·HO = -3.
+    tl_vi = 0  # TL is first in leaf's corner order
+    np.testing.assert_allclose(mesh.vertices[tl_vi, 1], -3.0, atol=1e-9)
+    # Sanity: with MIN, this would have been y = HO/2 - HO = -1. The
+    # difference is what the median rule buys us.
+
+
+def test_displaced_wide_stencil_finds_far_neighbour():
+    """A corner whose immediate cells are uncovered still resolves via
+    the 4×4 stencil as long as at least one cell inside it is covered.
+    Median over `[covered_depth]` = covered_depth."""
+    # Single covered cell at (6, 6); a corner at (4, 4) reaches it via
+    # the 4×4 stencil (rows 2..5, cols 2..5 — misses row/col 6). A
+    # corner at (8, 8) reaches it (rows 6..9, cols 6..9) → depth = HO.
     H = W = 8
     coverage = np.zeros((H, W), dtype=bool)
     coverage[6, 6] = True
@@ -437,9 +479,9 @@ def test_displaced_dilate_fallback_finds_far_neighbour():
         canonical_coverage=coverage,
         half_w_p=HALF_W_P, half_h_p=HALF_H_P, headplane_offset=HO,
     )
-    # Leaf has 4 corners at (4,4), (4,8), (8,4), (8,8). All within reach
-    # of the (6, 6) covered cell via the 4×4 stencil — every corner gets
-    # depth = HO → y = ho/2 - HO = -1.
+    # 4 corners at (4,4), (4,8), (8,4), (8,8). Border-flatness pass
+    # runs last and snaps every border corner to region-MIN = HO (the
+    # single covered cell's depth). All 4 verts at y = HO/2 - HO = -1.
     assert mesh.vertices.shape == (4, 3)
     np.testing.assert_allclose(mesh.vertices[:, 1], -1.0, atol=1e-9)
 

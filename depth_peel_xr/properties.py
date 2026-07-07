@@ -285,7 +285,7 @@ class ReconstructionProps(PropertyGroup):
     min_quad_size: IntProperty(
         name="Min Quad Size",
         description="Smallest quadtree leaf size (canonical pixels, snaps to power of 2) — lower = finer silhouettes",
-        default=8,
+        default=16,
         min=1,
         soft_max=64,
         subtype="PIXEL",

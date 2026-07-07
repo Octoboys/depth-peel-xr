@@ -255,3 +255,28 @@ def test_depth_without_tol_skips_variance_split():
         mask, min_quad_size=4, tile_size=32, depth=depth, depth_tol=None
     )
     assert leaves_no_variance == leaves_depth_only
+
+
+def test_stray_outliers_do_not_trip_percentile_variance():
+    """A visually flat region with a handful of stray outlier pixels
+    (< 5% of the region) must NOT subdivide under the p95-p5 metric —
+    the old max-min metric would have split on this because the raw
+    range is dominated by the outliers. Regression guard for the
+    silhouette-outlier scenario the percentile metric was picked for."""
+    H = W = 32
+    mask = np.ones((H, W), dtype=bool)
+    depth = np.full((H, W), 5.0, dtype=np.float32)
+    # ~4 outlier pixels (~0.4% of the 32×32 region) at 10× the flat depth.
+    # p95 lands well inside the 5.0 flat cluster, p5 too → spread ≈ 0.
+    depth[0, 0] = 50.0
+    depth[0, 31] = 50.0
+    depth[31, 0] = 50.0
+    depth[31, 31] = 50.0
+
+    leaves = build_quadtree(
+        mask, min_quad_size=4, tile_size=W, depth=depth, depth_tol=1.0
+    )
+    # Under the old max-min: 50 - 5 = 45 >> 1.0 → subdivides to min-size
+    # (64 leaves). Under p95-p5: spread ≈ 0 → no split (1 leaf).
+    assert len(leaves) == 1
+    assert leaves[0] == QuadtreeLeaf(0, 0, W, H, "interior")
